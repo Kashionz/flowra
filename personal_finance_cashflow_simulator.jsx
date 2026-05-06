@@ -15,7 +15,7 @@ import {
   getCurrentSupabaseUser,
   getSupabaseConfigHint,
   isSupabaseConfigured,
-  sendSupabaseMagicLink,
+  signInWithGoogle,
   signOutSupabase,
   upsertCloudBackup,
 } from "./lib/flowraSupabase.js";
@@ -1930,8 +1930,7 @@ export default function PersonalFinanceCashflowSimulator() {
   const [cloudAuthState, setCloudAuthState] = useState(() => (isSupabaseConfigured() ? "checking" : "unconfigured"));
   const [cloudSetupState, setCloudSetupState] = useState(() => (isSupabaseConfigured() ? "checking" : "unconfigured"));
   const [cloudUserEmail, setCloudUserEmail] = useState("");
-  const [authEmailInput, setAuthEmailInput] = useState("");
-  const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
+  const [isSigningInWithGoogle, setIsSigningInWithGoogle] = useState(false);
   const [isCloudBackupLoading, setIsCloudBackupLoading] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isPreparingPdf, setIsPreparingPdf] = useState(false);
@@ -2370,28 +2369,20 @@ export default function PersonalFinanceCashflowSimulator() {
     event.target.value = "";
   };
 
-  const sendMagicLink = async () => {
-    const email = authEmailInput.trim();
-    if (!email) {
-      setCloudNotice("請先輸入登入信箱。");
-      return;
-    }
-
-    setIsSendingMagicLink(true);
+  const signInWithGoogleHandler = async () => {
+    setIsSigningInWithGoogle(true);
+    setCloudNotice("");
     try {
       const redirectTo = typeof window !== "undefined" ? window.location.href : undefined;
-      const { error } = await sendSupabaseMagicLink(email, redirectTo);
+      const { error } = await signInWithGoogle(redirectTo);
 
       if (error) {
-        setCloudNotice(error.message || "登入連結寄送失敗。");
-        return;
+        setCloudNotice(error.message || "Google 登入失敗。");
       }
-
-      setCloudNotice(`驗證信已寄到 ${email}，請在同一台裝置開啟信件完成登入。`);
     } catch (error) {
-      setCloudNotice(getErrorMessage(error, "驗證信寄送失敗。"));
+      setCloudNotice(getErrorMessage(error, "Google 登入失敗。"));
     } finally {
-      setIsSendingMagicLink(false);
+      setIsSigningInWithGoogle(false);
     }
   };
 
@@ -3000,29 +2991,23 @@ export default function PersonalFinanceCashflowSimulator() {
                       </InteractiveButton>
                     ) : null}
                   </div>
-                  {cloudAuthState === "authenticated" ? (
-                    <div style={{ ...styles.metaText, fontSize: "12px", margin: 0 }}>已連線，可直接同步備份或還原最近備份。</div>
-                  ) : (
+                  {cloudAuthState === "authenticated" ? null : (
                     <>
-                      <div style={{ ...styles.metaText, fontSize: "12px", margin: "0 0 8px" }}>輸入信箱寄送驗證信；完成登入後此頁會自動更新狀態。</div>
-                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "stretch" }}>
-                        <div style={{ flex: "1 1 200px", minWidth: 0 }}>
-                          <InteractiveInput
-                            type="email"
-                            placeholder="email@example.com"
-                            value={authEmailInput}
-                            disabled={!supabaseReady || isSendingMagicLink}
-                            onChange={(event) => setAuthEmailInput(event.target.value)}
-                          />
-                        </div>
-                        <InteractiveButton
-                          onClick={sendMagicLink}
-                          disabled={!supabaseReady || isSendingMagicLink || !authEmailInput.trim()}
-                          style={{ flexShrink: 0 }}
-                        >
-                          {isSendingMagicLink ? "寄送中…" : "寄送驗證信"}
-                        </InteractiveButton>
-                      </div>
+                      <div style={{ ...styles.metaText, fontSize: "12px", margin: "0 0 8px" }}>使用 Google 帳號登入後即可同步雲端備份。</div>
+                      <InteractiveButton
+                        variant="smallButton"
+                        onClick={signInWithGoogleHandler}
+                        disabled={!supabaseReady || isSigningInWithGoogle}
+                        style={{ width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", padding: "10px 14px" }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
+                          <path fill="#4285F4" d="M17.64 9.2a10.3 10.3 0 0 0-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.79 2.71v2.26h2.9c1.7-1.56 2.69-3.87 2.69-6.61z" />
+                          <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.34 0-4.32-1.58-5.03-3.71H.95v2.33A9 9 0 0 0 9 18z" />
+                          <path fill="#FBBC05" d="M3.97 10.71A5.42 5.42 0 0 1 3.68 9c0-.59.1-1.17.29-1.71V4.96H.95A9 9 0 0 0 0 9c0 1.45.35 2.83.95 4.04l3.02-2.33z" />
+                          <path fill="#EA4335" d="M9 3.58c1.32 0 2.51.46 3.44 1.35l2.58-2.58A9 9 0 0 0 9 0 9 9 0 0 0 .95 4.96L3.97 7.3C4.68 5.16 6.66 3.58 9 3.58z" />
+                        </svg>
+                        {isSigningInWithGoogle ? "前往登入…" : "使用 Google 帳號登入"}
+                      </InteractiveButton>
                     </>
                   )}
                 </div>
