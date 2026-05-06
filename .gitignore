@@ -1,0 +1,8 @@
+.env.local
+.DS_Store
+node_modules/
+.pnpm-store/
+.playwright-cli/
+.playwright-mcp/
+.superpowers/
+flowra-current-full.png
