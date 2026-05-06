@@ -8,6 +8,9 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { CHART_COLORS, CHART_THEME_VARS, ChartSurface, ChartTooltip, ChartTooltipCard } from "./components/ui/chart.jsx";
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
+import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
+import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
+import { readDraftScenario, readPendingCloudSync, resolveHydrationSource } from "./lib/scenarioPersistence.js";
 import {
   checkFlowraCloudSetup,
   createFlowraSupabaseClient,
@@ -45,16 +48,6 @@ const SESSION_META_DEFAULT = {
   lastSyncedAt: "",
   lastSyncAttemptAt: "",
 };
-const CATEGORY_META = {
-  medical: { label: "醫療", color: "#dc2626" },
-  travel: { label: "旅遊", color: "#0284c7" },
-  gift: { label: "禮金", color: "#d946ef" },
-  tax: { label: "稅務", color: "#ea580c" },
-  tech: { label: "3C", color: "#7c3aed" },
-  social: { label: "社交", color: "#0891b2" },
-  other: { label: "其他", color: "#64748b" },
-};
-const CATEGORY_OPTIONS = Object.keys(CATEGORY_META);
 let nextId = 1;
 function makeId(prefix = "id") {
   nextId += 1;
@@ -596,16 +589,16 @@ function CashTrendChart({ rows, reserveLine, onSelectMonth, selectedMonthKey }) 
   if (!rows.length) return <EmptyChartState />;
   const todayMonthKey = rows.find((row) => row.monthKey === currentBaseMonth())?.monthKey;
   const chartConfig = {
-    balance: { label: "月底現金", color: CHART_COLORS.balance },
+    balance: { label: "月底剩餘現金", color: CHART_COLORS.balance },
     salary: { label: "薪資" },
     expense: { label: "總支出" },
     net: { label: "月淨額" },
   };
 
   return (
-    <ChartSurface ariaLabel="月底現金趨勢圖，包含破產線、緊急預備金線與今天標記。" config={chartConfig}>
+    <ChartSurface ariaLabel="每月剩餘現金變化圖，包含破產線、緊急預備金線與今天標記。" config={chartConfig}>
       <RechartsLineChart data={rows} margin={{ top: 18, right: 18, left: 0, bottom: 8 }}>
-        <Customized component={() => <title>月底現金趨勢圖</title>} />
+        <Customized component={() => <title>每月剩餘現金變化圖</title>} />
         <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 6" vertical={false} />
         <XAxis dataKey="monthKey" tickFormatter={(value) => formatMonthLabel(value, true)} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={ChartCurrencyTick} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} width={44} />
@@ -623,7 +616,7 @@ function CashTrendChart({ rows, reserveLine, onSelectMonth, selectedMonthKey }) 
         <Line
           type="monotone"
           dataKey="balance"
-          name="月底現金"
+          name="月底剩餘現金"
           stroke={CHART_COLORS.balance}
           strokeWidth={3}
           dot={(props) => {
@@ -668,9 +661,9 @@ function IncomeExpenseChart({ rows, onSelectMonth, selectedMonthKey }) {
   };
 
   return (
-    <ChartSurface ariaLabel="每月收入與支出比較圖，點擊長條會切到對應月份。" config={chartConfig}>
+    <ChartSurface ariaLabel="每月收支比較圖，點擊長條會切到對應月份。" config={chartConfig}>
       <RechartsBarChart data={rows} margin={{ top: 18, right: 18, left: 0, bottom: 8 }} barGap={6}>
-        <Customized component={() => <title>每月收入與支出比較圖</title>} />
+        <Customized component={() => <title>每月收支比較圖</title>} />
         <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 6" vertical={false} />
         <XAxis dataKey="monthKey" tickFormatter={(value) => formatMonthLabel(value, true)} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={ChartCurrencyTick} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} width={44} />
@@ -692,19 +685,39 @@ function IncomeExpenseChart({ rows, onSelectMonth, selectedMonthKey }) {
 }
 
 function SegmentedControl({ value, onChange, options, ariaLabel }) {
+  const activeIndex = Math.max(0, options.findIndex((option) => option.value === value));
   return (
     <div
       role="group"
       aria-label={ariaLabel}
       style={{
-        display: "inline-flex",
-        gap: "2px",
+        position: "relative",
+        display: "inline-grid",
+        gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
         padding: "3px",
         background: "#f1f5f9",
         border: "1px solid #e2e8f0",
         borderRadius: "999px",
+        overflow: "hidden",
       }}
     >
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          top: "3px",
+          bottom: "3px",
+          left: "3px",
+          width: `calc((100% - 6px) / ${options.length})`,
+          borderRadius: "999px",
+          border: "1px solid #e2e8f0",
+          background: "#ffffff",
+          boxShadow: "0 8px 18px rgba(15,23,42,0.08)",
+          transform: `translateX(${activeIndex * 100}%)`,
+          transition: "transform 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease",
+          willChange: "transform",
+        }}
+      />
       {options.map((option) => {
         const active = value === option.value;
         return (
@@ -714,15 +727,17 @@ function SegmentedControl({ value, onChange, options, ariaLabel }) {
             onClick={() => onChange(option.value)}
             aria-pressed={active}
             style={{
+              position: "relative",
+              zIndex: 1,
               padding: "5px 14px",
               borderRadius: "999px",
-              border: `1px solid ${active ? "#e2e8f0" : "transparent"}`,
-              background: active ? "#ffffff" : "transparent",
+              border: "1px solid transparent",
+              background: "transparent",
               color: active ? "#0f172a" : "#64748b",
               fontWeight: active ? 700 : 600,
               fontSize: "12px",
               cursor: "pointer",
-              transition: "background 160ms ease, color 160ms ease, border-color 160ms ease",
+              transition: "color 220ms ease, opacity 220ms ease",
             }}
           >
             {option.label}
@@ -743,7 +758,7 @@ function ExpenseCompositionChart({ rows, mode, view, setMode, setView, selectedM
   const labels =
     view === "category"
       ? Object.fromEntries(CATEGORY_OPTIONS.map((key) => [key, CATEGORY_META[key].label]))
-      : { fixed: "固定支出", variable: "浮動支出", oneTime: "一次性支出" };
+      : { fixed: "固定支出", variable: "浮動支出", oneTime: "單筆支出" };
   const totals = rows.map((row) =>
     seriesKeys.reduce((sum, key) => sum + n(view === "category" ? row.expenseByCategory[key] : row.expenseByGroup[key]), 0)
   );
@@ -797,82 +812,84 @@ function ExpenseCompositionChart({ rows, mode, view, setMode, setView, selectedM
           ]}
         />
       </div>
-      {selectedRow ? (
-        <div style={{ marginBottom: "12px", padding: "10px 12px", borderRadius: "12px", border: "1px solid #e2e8f0", background: "#f8fafc" }}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>鑽取月份</span>
-            <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>{selectedRow.fullLabel}</span>
+      <div key={`${mode}-${view}`} className="flowra-tab-content-enter">
+        {selectedRow ? (
+          <div style={{ marginBottom: "12px", padding: "10px 12px", borderRadius: "12px", border: "1px solid #e2e8f0", background: "#f8fafc" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>鑽取月份</span>
+              <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>{selectedRow.fullLabel}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", gap: "6px" }}>
+              {seriesKeys.map((key) => {
+                const amount = valueFor(selectedRow, key);
+                const ratio = selectedTotal > 0 ? Math.round((amount / selectedTotal) * 1000) / 10 : 0;
+                return (
+                  <div key={key} style={{ background: "white", borderRadius: "10px", border: "1px solid #e2e8f0", padding: "8px 10px", borderLeft: `3px solid ${colors[key]}` }}>
+                    <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "2px" }}>{labels[key]}</div>
+                    <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>{hidden ? "★★★" : currency(amount)}</div>
+                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>{ratio}%</div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", gap: "6px" }}>
-            {seriesKeys.map((key) => {
-              const amount = valueFor(selectedRow, key);
-              const ratio = selectedTotal > 0 ? Math.round((amount / selectedTotal) * 1000) / 10 : 0;
-              return (
-                <div key={key} style={{ background: "white", borderRadius: "10px", border: "1px solid #e2e8f0", padding: "8px 10px", borderLeft: `3px solid ${colors[key]}` }}>
-                  <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "2px" }}>{labels[key]}</div>
-                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>{hidden ? "★★★" : currency(amount)}</div>
-                  <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>{ratio}%</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-      <ChartSurface
-        ariaLabel={`支出組成堆疊面積圖，現在顯示${view === "category" ? "按分類" : "按支出群組"}與${mode === "ratio" ? "佔比百分比" : "絕對金額"}。`}
-        config={chartConfig}
-        footer={seriesKeys.map((key) => (
-          <div key={key} style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569" }}>
-            <span style={{ width: "10px", height: "10px", borderRadius: "999px", background: colors[key] }} />
-            {labels[key]}
-          </div>
-        ))}
-      >
-        <RechartsAreaChart data={chartData} margin={{ top: 18, right: 18, left: 0, bottom: 8 }}>
-          <Customized component={() => <title>支出組成堆疊面積圖</title>} />
-          <defs>
-            {seriesKeys.map((key) => (
-              <linearGradient key={key} id={`flowra-gradient-${key}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={colors[key]} stopOpacity={0.78} />
-                <stop offset="95%" stopColor={colors[key]} stopOpacity={0.08} />
-              </linearGradient>
-            ))}
-          </defs>
-          <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 6" vertical={false} />
-          <XAxis dataKey="monthKey" tickFormatter={(value) => formatMonthLabel(value, true)} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} />
-          <YAxis
-            tickFormatter={(value) => (mode === "ratio" ? `${value}%` : ChartCurrencyTick(value))}
-            tick={{ fontSize: 11, fill: "#64748b" }}
-            axisLine={false}
-            tickLine={false}
-            width={44}
-            domain={mode === "ratio" ? [0, 100] : [0, max]}
-          />
-          <ChartTooltip
-            content={<ChartTooltipCard />}
-            formatter={(value, name) => (mode === "ratio" ? [`${value}%`, name] : [Math.round(n(value)), name])}
-            labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ""}
-          />
-          {seriesKeys.map((key) => (
-            <Area
-              key={key}
-              type="monotone"
-              dataKey={key}
-              name={labels[key]}
-              stackId="expense"
-              stroke={colors[key]}
-              fill={`url(#flowra-gradient-${key})`}
-              fillOpacity={1}
-            />
+        ) : null}
+        <ChartSurface
+          ariaLabel={`支出組成變化圖，現在顯示${view === "category" ? "按分類" : "按支出群組"}與${mode === "ratio" ? "佔比百分比" : "絕對金額"}。`}
+          config={chartConfig}
+          footer={seriesKeys.map((key) => (
+            <div key={key} style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#475569" }}>
+              <span style={{ width: "10px", height: "10px", borderRadius: "999px", background: colors[key] }} />
+              {labels[key]}
+            </div>
           ))}
-        </RechartsAreaChart>
-      </ChartSurface>
+        >
+          <RechartsAreaChart data={chartData} margin={{ top: 18, right: 18, left: 0, bottom: 8 }}>
+            <Customized component={() => <title>支出組成變化圖</title>} />
+            <defs>
+              {seriesKeys.map((key) => (
+                <linearGradient key={key} id={`flowra-gradient-${key}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={colors[key]} stopOpacity={0.78} />
+                  <stop offset="95%" stopColor={colors[key]} stopOpacity={0.08} />
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 6" vertical={false} />
+            <XAxis dataKey="monthKey" tickFormatter={(value) => formatMonthLabel(value, true)} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} />
+            <YAxis
+              tickFormatter={(value) => (mode === "ratio" ? `${value}%` : ChartCurrencyTick(value))}
+              tick={{ fontSize: 11, fill: "#64748b" }}
+              axisLine={false}
+              tickLine={false}
+              width={44}
+              domain={mode === "ratio" ? [0, 100] : [0, max]}
+            />
+            <ChartTooltip
+              content={<ChartTooltipCard />}
+              formatter={(value, name) => (mode === "ratio" ? [`${value}%`, name] : [Math.round(n(value)), name])}
+              labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ""}
+            />
+            {seriesKeys.map((key) => (
+              <Area
+                key={key}
+                type="monotone"
+                dataKey={key}
+                name={labels[key]}
+                stackId="expense"
+                stroke={colors[key]}
+                fill={`url(#flowra-gradient-${key})`}
+                fillOpacity={1}
+              />
+            ))}
+          </RechartsAreaChart>
+        </ChartSurface>
+      </div>
     </div>
   );
 }
 
 const COLLAPSE_EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
-const COLLAPSE_DURATION = "300ms";
+const COLLAPSE_DURATION = "420ms";
 
 function Chevron({ open, size = 12 }) {
   return (
@@ -1272,6 +1289,63 @@ function InteractiveButton({
   );
 }
 
+function InteractiveSwitch({
+  checked,
+  onChange,
+  disabled = false,
+  ariaLabel,
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isPressed, setIsPressed] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const trackStyle = {
+    ...styles.switchTrack,
+    ...(checked ? styles.switchTrackChecked : styles.switchTrackUnchecked),
+    ...(!disabled && isHovered ? styles.switchTrackHover : null),
+    ...(!disabled && isFocused ? styles.switchTrackFocus : null),
+    ...(!disabled && isPressed ? styles.switchTrackPressed : null),
+    ...(disabled ? styles.switchTrackDisabled : null),
+  };
+  const thumbStyle = {
+    ...styles.switchThumb,
+    transform: checked ? "translateX(20px)" : "translateX(0)",
+  };
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      style={trackStyle}
+      onClick={() => onChange(!checked)}
+      onMouseEnter={() => {
+        if (!disabled) setIsHovered(true);
+      }}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        setIsPressed(false);
+      }}
+      onMouseDown={() => {
+        if (!disabled) setIsPressed(true);
+      }}
+      onMouseUp={() => {
+        setIsPressed(false);
+      }}
+      onFocus={() => {
+        if (!disabled) setIsFocused(true);
+      }}
+      onBlur={() => {
+        setIsFocused(false);
+        setIsPressed(false);
+      }}
+    >
+      <span style={thumbStyle} />
+    </button>
+  );
+}
+
 function InteractiveInput({ style, disabled, onFocus, onBlur, onMouseEnter, onMouseLeave, ...props }) {
   const { isHovered, isFocused, handlers } = useInteractiveFieldState(disabled);
   return (
@@ -1335,7 +1409,7 @@ function InteractiveTextarea({ style, disabled, onFocus, onBlur, onMouseEnter, o
   );
 }
 
-function Field({ label, value, onChange, suffix = "", min, step = 1000, disabled }) {
+function Field({ label, value, onChange, suffix = "", min, step = 1000, precision = 0, disabled }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [hoveredStepper, setHoveredStepper] = useState("");
@@ -1362,9 +1436,10 @@ function Field({ label, value, onChange, suffix = "", min, step = 1000, disabled
           <input
             type="number"
             min={min}
+            step={step}
             value={value}
             disabled={disabled}
-            onChange={(event) => onChange(Math.round(n(event.target.value)))}
+            onChange={(event) => onChange(normalizeNumericInput(event.target.value, { min, precision }))}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             style={{
@@ -1378,7 +1453,7 @@ function Field({ label, value, onChange, suffix = "", min, step = 1000, disabled
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onChange(n(value) + step)}
+              onClick={() => onChange(stepNumericValue(value, step, "up", { min, precision }))}
               onMouseEnter={() => {
                 if (!disabled) setHoveredStepper("up");
               }}
@@ -1396,7 +1471,7 @@ function Field({ label, value, onChange, suffix = "", min, step = 1000, disabled
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onChange(Math.max(n(min ?? -Infinity), n(value) - step))}
+              onClick={() => onChange(stepNumericValue(value, step, "down", { min, precision }))}
               onMouseEnter={() => {
                 if (!disabled) setHoveredStepper("down");
               }}
@@ -1571,14 +1646,14 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
                 <NetPill value={row.net} hidden={hidden} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px 14px", fontSize: "12px" }}>
-                <MobileStat label="月初現金" value={row.startBalance} hidden={hidden} />
-                <MobileStat label="月底現金" value={row.balance} hidden={hidden} danger={balanceNegative} />
-                <MobileStat label="收入合計" value={row.income} hidden={hidden} accent="#047857" />
-                <MobileStat label="支出合計" value={row.expense} hidden={hidden} accent="#dc2626" />
+                <MobileStat label="月初手上現金" value={row.startBalance} hidden={hidden} />
+                <MobileStat label="月底剩餘現金" value={row.balance} hidden={hidden} danger={balanceNegative} />
+                <MobileStat label="本月收入" value={row.income} hidden={hidden} accent="#047857" />
+                <MobileStat label="本月支出" value={row.expense} hidden={hidden} accent="#dc2626" />
               </div>
               {row.oneTimeItems.filter((item) => item.type === "expense").length > 0 ? (
                 <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px dashed #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>一次性</span>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>單筆</span>
                   <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626", fontVariantNumeric: "tabular-nums" }}>
                     {hidden ? "★★★" : `NT$ ${currency(row.oneTimeExpense)}`}
                   </span>
@@ -1610,17 +1685,17 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
           </tr>
           <tr>
             <th style={{ ...styles.th, textAlign: "left" }}>月份</th>
-            <th style={styles.th}>月初現金</th>
+            <th style={styles.th}>月初手上現金</th>
             <th style={{ ...styles.th, ...groupBoundary }}>薪資</th>
             <th style={styles.th}>補貼</th>
-            <th style={styles.th}>一次性</th>
+            <th style={styles.th}>單筆</th>
             <th style={{ ...styles.th, ...groupBoundary }}>房租</th>
             <th style={styles.th}>生活費</th>
             <th style={styles.th}>學貸</th>
-            <th style={styles.th}>一次性</th>
+            <th style={styles.th}>單筆</th>
             <th style={styles.th}>分期</th>
             <th style={{ ...styles.th, ...groupBoundary }}>月淨額</th>
-            <th style={styles.th}>月底現金</th>
+            <th style={styles.th}>月底剩餘現金</th>
           </tr>
         </thead>
         <tbody>
@@ -1705,20 +1780,20 @@ const styles = {
     border: "1px solid rgba(203,213,225,0.7)",
     background: "#ffffff",
   },
-  badge: {
-    display: "inline-flex",
-    alignItems: "center",
-    background: "rgba(255,255,255,0.94)",
-    border: "1px solid rgba(203,213,225,0.9)",
-    borderRadius: "999px",
-    padding: "7px 13px",
-    fontSize: "11px",
-    fontWeight: 800,
-    letterSpacing: "0.08em",
-    color: "#475569",
-    textTransform: "uppercase",
+  title: {
+    display: "inline-block",
+    fontSize: "clamp(48px, 8vw, 76px)",
+    lineHeight: 0.92,
+    fontWeight: 980,
+    letterSpacing: "-0.08em",
+    margin: "0 0 12px",
+    background: "linear-gradient(135deg, #2563eb 0%, #0ea5e9 48%, #22d3ee 100%)",
+    color: "#1d4ed8",
+    WebkitBackgroundClip: "text",
+    backgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    textShadow: "0 10px 24px rgba(14,165,233,0.16)",
   },
-  title: { fontSize: "clamp(32px, 5vw, 46px)", lineHeight: 1.04, fontWeight: 900, letterSpacing: "-0.03em", margin: "16px 0 10px" },
   subtitle: { maxWidth: "780px", fontSize: "14px", color: "#475569", lineHeight: 1.8, margin: 0 },
   button: {
     border: "1px solid #e2e8f0",
@@ -1850,6 +1925,49 @@ const styles = {
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
+  switchTrack: {
+    width: "48px",
+    height: "28px",
+    borderRadius: "999px",
+    border: "1px solid transparent",
+    padding: "3px",
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    transition: INTERACTIVE_TRANSITION,
+    willChange: INTERACTIVE_WILL_CHANGE,
+    flexShrink: 0,
+  },
+  switchTrackChecked: {
+    background: "#d97706",
+    borderColor: "#d97706",
+  },
+  switchTrackUnchecked: {
+    background: "#e2e8f0",
+    borderColor: "#cbd5e1",
+  },
+  switchTrackHover: {
+    boxShadow: "0 10px 24px rgba(15,23,42,0.08)",
+  },
+  switchTrackFocus: {
+    boxShadow: "0 0 0 3px rgba(217,119,6,0.18)",
+  },
+  switchTrackPressed: {
+    transform: "scale(0.98)",
+  },
+  switchTrackDisabled: {
+    opacity: 0.6,
+    cursor: "not-allowed",
+  },
+  switchThumb: {
+    width: "20px",
+    height: "20px",
+    borderRadius: "999px",
+    background: "#ffffff",
+    boxShadow: "0 2px 8px rgba(15,23,42,0.18)",
+    transition: "transform 160ms ease",
+  },
   dangerButton: {
     border: "1px solid #fecaca",
     background: "#fff1f2",
@@ -1888,6 +2006,30 @@ const styles = {
   inputGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" },
   inputGridSingle: { display: "grid", gridTemplateColumns: "1fr", gap: "12px" },
   label: { display: "block", fontSize: "12px", fontWeight: 700, color: "#64748b", marginBottom: "7px" },
+  switchField: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "14px",
+    marginTop: "12px",
+    padding: "12px 14px",
+    borderRadius: "16px",
+    border: "1px solid #e2e8f0",
+    background: "#f8fafc",
+    flexWrap: "wrap",
+  },
+  switchCopy: {
+    display: "grid",
+    gap: "4px",
+    flex: "1 1 220px",
+    minWidth: 0,
+  },
+  switchControl: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    flexShrink: 0,
+  },
   input: {
     width: "100%",
     boxSizing: "border-box",
@@ -2028,6 +2170,8 @@ export default function PersonalFinanceCashflowSimulator() {
   const monthRefs = useRef({});
   const fileInputRef = useRef(null);
   const cloudHydratedRef = useRef(false);
+  const hasLocalDraftRef = useRef(false);
+  const hydrationInitializedRef = useRef(false);
   const scenarioInitializedRef = useRef(false);
   const skipNextScenarioDirtyRef = useRef(false);
   const reportRef = useRef(null);
@@ -2063,9 +2207,19 @@ export default function PersonalFinanceCashflowSimulator() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem("flowra.cashflow.draft");
-      window.localStorage.removeItem("flowra.cashflow.pending-cloud-sync");
+      const localDraft = readDraftScenario(window.localStorage);
+      const pendingCloudSync = readPendingCloudSync(window.localStorage);
+
+      hasLocalDraftRef.current = Boolean(localDraft);
+
+      if (localDraft) {
+        transitionApply(localDraft, { markDirty: false });
+      }
+      if (pendingCloudSync) {
+        setCloudSyncStatus("pending");
+      }
     }
+    hydrationInitializedRef.current = true;
     setSessionMeta(writeSessionMeta({ lastOpenedAt: new Date().toISOString() }));
   }, []);
 
@@ -2175,7 +2329,15 @@ export default function PersonalFinanceCashflowSimulator() {
   }, [supabaseReady]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !supabaseReady || cloudHydratedRef.current) return undefined;
+    if (
+      typeof window === "undefined" ||
+      !supabaseReady ||
+      !hydrationInitializedRef.current ||
+      hasLocalDraftRef.current ||
+      cloudHydratedRef.current
+    ) {
+      return undefined;
+    }
     const supabase = createFlowraSupabaseClient();
     if (!supabase) return undefined;
 
@@ -2183,7 +2345,18 @@ export default function PersonalFinanceCashflowSimulator() {
     supabase.auth.getSession().then(async ({ data, error }) => {
       if (cancelled || error || !data?.session || cloudHydratedRef.current) return;
       cloudHydratedRef.current = true;
-      await refreshCloudBackup({ silent: true, applyPayload: false });
+      const { data: cloudBackup } = await refreshCloudBackup({ silent: true, applyPayload: false });
+      if (cancelled) return;
+
+      const hydration = resolveHydrationSource({
+        localDraft: null,
+        cloudPayload: cloudBackup?.payload || null,
+      });
+
+      if (hydration.source === "cloud" && hydration.payload) {
+        transitionApply(hydration.payload, { markDirty: false });
+        setCloudSyncStatus("synced");
+      }
     });
 
     return () => {
@@ -2237,7 +2410,7 @@ export default function PersonalFinanceCashflowSimulator() {
       cloneScenario(current, {
         oneTimeItems: [
           ...current.oneTimeItems,
-          { id, name: "新增一次性項目", amount: 1000, month: current.meta.baseMonth, type: "expense", category: "other" },
+          { id, name: "新增單筆項目", amount: 1000, month: current.meta.baseMonth, type: "expense", category: "other" },
         ],
       })
     );
@@ -2695,6 +2868,19 @@ export default function PersonalFinanceCashflowSimulator() {
           from { opacity: 0; }
           to { opacity: 1; }
         }
+        .flowra-tab-content-enter {
+          animation: flowra-tab-content-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        @keyframes flowra-tab-content-enter {
+          from {
+            opacity: 0.58;
+            transform: translateX(8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
         input[type="number"]::-webkit-outer-spin-button,
         input[type="number"]::-webkit-inner-spin-button {
           -webkit-appearance: none;
@@ -2708,10 +2894,7 @@ export default function PersonalFinanceCashflowSimulator() {
       <div style={{ ...styles.container, ...styles.chartTheme }} className={`flowra-print-root${isPreparingPdf ? " flowra-pdf-export" : ""}${isPreparingReportExport ? " flowra-report-export" : ""}`} ref={reportRef}>
         <div style={styles.header}>
           <div>
-            <div style={styles.badge}>
-              個人現金流試算
-            </div>
-            <h1 style={styles.title}>未來財務趨勢模擬器</h1>
+            <h1 style={styles.title}>Flowra</h1>
             <p style={styles.subtitle}>
               用來試算未來幾個月的現金流與支出變化。
             </p>
@@ -2722,17 +2905,17 @@ export default function PersonalFinanceCashflowSimulator() {
         </div>
 
         <div style={styles.summaryGrid}>
-          <StatCard label="期末現金" value={summary.finalBalance} hidden={hiddenAmounts} danger={summary.finalBalance < 0} />
-          <StatCard label="期間最低現金" value={summary.minBalance} hidden={hiddenAmounts} danger={summary.minBalance < 0} />
-          <StatCard label="期間總收入" value={summary.totalIncome} hidden={hiddenAmounts} />
-          <StatCard label="估計分期利息合計" value={summary.totalInstallmentInterest} hidden={hiddenAmounts} />
+          <StatCard label="最後剩餘現金" value={summary.finalBalance} hidden={hiddenAmounts} danger={summary.finalBalance < 0} />
+          <StatCard label="最低剩餘現金" value={summary.minBalance} hidden={hiddenAmounts} danger={summary.minBalance < 0} />
+          <StatCard label="這段期間總收入" value={summary.totalIncome} hidden={hiddenAmounts} />
+          <StatCard label="分期利息總額" value={summary.totalInstallmentInterest} hidden={hiddenAmounts} />
         </div>
 
         {summary.minBalance < 0 ? (
           <div style={styles.alert}>
             <div>
-              <strong>現金流會轉負</strong>
-              <div>目前設定下，期間最低現金為 {maskCurrency(summary.minBalance, hiddenAmounts)}。建議降低生活費、延後支出、增加收入或調整分期期數。</div>
+              <strong>現金可能不夠用</strong>
+              <div>依目前設定，這段期間最低會剩 {maskCurrency(summary.minBalance, hiddenAmounts)}。建議降低生活開銷、延後支出、增加收入或調整分期期數。</div>
             </div>
           </div>
         ) : null}
@@ -2740,55 +2923,49 @@ export default function PersonalFinanceCashflowSimulator() {
         <div className={mainGridClassName}>
           <div className="flowra-no-print flowra-no-report-export">
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <h2 style={styles.cardTitle}>基本設定</h2>
+              <h2 style={styles.cardTitle}>試算設定</h2>
 
-              <SettingsGroup title="時間範圍" accent="#64748b">
+              <SettingsGroup title="試算期間" accent="#64748b">
                 <div className={inputGridClassName}>
                   <BaseMonthPicker value={scenario.meta.baseMonth} onChange={(value) => patchMeta({ baseMonth: value })} disabled={readonlyShared} />
-                  <Field label="試算月數" value={scenario.basics.monthsToProject} onChange={(value) => patchBasics({ monthsToProject: Math.max(0, Math.round(value)) })} suffix="月" min={0} step={1} disabled={readonlyShared} />
+                  <Field label="試算幾個月" value={scenario.basics.monthsToProject} onChange={(value) => patchBasics({ monthsToProject: Math.max(0, Math.round(value)) })} suffix="月" min={0} step={1} disabled={readonlyShared} />
                 </div>
               </SettingsGroup>
 
-              <SettingsGroup title="可動用現金" accent="#d97706">
+              <SettingsGroup title="可用現金" accent="#d97706">
                 <div className={inputGridClassName}>
-                  <Field label="目前台幣餘額" value={scenario.basics.startingTwd} onChange={(value) => patchBasics({ startingTwd: value })} suffix="元" disabled={readonlyShared} />
-                  <Field label="日幣現金折台幣" value={scenario.basics.jpyCashTwd} onChange={(value) => patchBasics({ jpyCashTwd: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="目前手上台幣" value={scenario.basics.startingTwd} onChange={(value) => patchBasics({ startingTwd: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="日幣現金換算台幣" value={scenario.basics.jpyCashTwd} onChange={(value) => patchBasics({ jpyCashTwd: value })} suffix="元" disabled={readonlyShared} />
                 </div>
-                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px", marginTop: "10px" }}>
-                  <span style={{ ...styles.label, margin: 0 }}>日幣現金納入可動用資金</span>
-                  <div style={{ display: "flex", gap: "6px" }}>
-                    <InteractiveButton
-                      variant={scenario.basics.includeJpyCash ? "activePill" : "pillButton"}
-                      onClick={() => patchBasics({ includeJpyCash: true })}
+                <div style={styles.switchField}>
+                  <div style={styles.switchCopy}>
+                    <span style={{ ...styles.label, margin: 0, whiteSpace: "nowrap" }}>把日幣現金算進可用資金</span>
+                  </div>
+                  <div style={styles.switchControl}>
+                    <InteractiveSwitch
+                      checked={scenario.basics.includeJpyCash}
+                      onChange={(value) => patchBasics({ includeJpyCash: value })}
                       disabled={readonlyShared}
-                    >
-                      納入
-                    </InteractiveButton>
-                    <InteractiveButton
-                      variant={!scenario.basics.includeJpyCash ? "activePill" : "pillButton"}
-                      onClick={() => patchBasics({ includeJpyCash: false })}
-                      disabled={readonlyShared}
-                    >
-                      不納入
-                    </InteractiveButton>
+                      ariaLabel="切換是否將日幣現金計入可用資金"
+                    />
                   </div>
                 </div>
               </SettingsGroup>
 
               <SettingsGroup title="每月收入" accent="#16a34a">
                 <div className={inputGridClassName}>
-                  <Field label="每月薪資" value={scenario.basics.monthlySalary} onChange={(value) => patchBasics({ monthlySalary: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="每月薪水" value={scenario.basics.monthlySalary} onChange={(value) => patchBasics({ monthlySalary: value })} suffix="元" disabled={readonlyShared} />
                   <MonthPicker label="薪資開始月份" value={scenario.basics.salaryStartsMonth} onChange={(value) => patchBasics({ salaryStartsMonth: value })} baseMonth={scenario.meta.baseMonth} horizon={scenario.basics.monthsToProject} disabled={readonlyShared} />
-                  <Field label="每月租屋補貼" value={scenario.basics.monthlySubsidy} onChange={(value) => patchBasics({ monthlySubsidy: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="每月租屋補助" value={scenario.basics.monthlySubsidy} onChange={(value) => patchBasics({ monthlySubsidy: value })} suffix="元" disabled={readonlyShared} />
                   <MonthPicker label="補貼開始月份" value={scenario.basics.subsidyStartsMonth} onChange={(value) => patchBasics({ subsidyStartsMonth: value })} baseMonth={scenario.meta.baseMonth} horizon={scenario.basics.monthsToProject} disabled={readonlyShared} />
                 </div>
               </SettingsGroup>
 
-              <SettingsGroup title="每月固定支出" accent="#dc2626" last>
+              <SettingsGroup title="每月固定開銷" accent="#dc2626" last>
                 <div className={inputGridClassName}>
                   <Field label="每月房租" value={scenario.basics.monthlyRent} onChange={(value) => patchBasics({ monthlyRent: value })} suffix="元" disabled={readonlyShared} />
-                  <Field label="每月生活費" value={scenario.basics.monthlyLivingCost} onChange={(value) => patchBasics({ monthlyLivingCost: value })} suffix="元" disabled={readonlyShared} />
-                  <Field label="每月學貸" value={scenario.basics.monthlyStudentLoan} onChange={(value) => patchBasics({ monthlyStudentLoan: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="每月生活開銷" value={scenario.basics.monthlyLivingCost} onChange={(value) => patchBasics({ monthlyLivingCost: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="每月學貸還款" value={scenario.basics.monthlyStudentLoan} onChange={(value) => patchBasics({ monthlyStudentLoan: value })} suffix="元" disabled={readonlyShared} />
                 </div>
               </SettingsGroup>
             </InteractiveSurface>
@@ -2802,7 +2979,7 @@ export default function PersonalFinanceCashflowSimulator() {
                   style={sectionToggleStyle}
                 >
                   <Chevron open={isOneTimeOpen} />
-                  <span>一次性收入 / 支出</span>
+                  <span>單筆收入 / 支出</span>
                   <CountPill count={scenario.oneTimeItems.length} />
                 </button>
                 <InteractiveButton variant="smallButton" onClick={addOneTimeItem} disabled={readonlyShared}>
@@ -2813,7 +2990,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 {scenario.oneTimeItems.length === 0
                   ? (
                     <div style={{ ...styles.mutedBox, marginTop: 0, textAlign: "center", color: "#64748b", fontSize: "13px" }}>
-                      尚未新增任何一次性收支，按右上「+ 新增」開始。
+                      尚未新增任何單筆收支，按右上「+ 新增」開始。
                     </div>
                   )
                   : (
@@ -2926,7 +3103,7 @@ export default function PersonalFinanceCashflowSimulator() {
                   style={sectionToggleStyle}
                 >
                   <Chevron open={isInstallmentsOpen} />
-                  <span>分期帳單</span>
+                  <span>分期付款</span>
                   <CountPill count={installmentRows.length} />
                 </button>
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
@@ -2942,7 +3119,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 {installmentRows.length === 0
                   ? (
                     <div style={{ ...styles.mutedBox, marginTop: 0, textAlign: "center", color: "#64748b", fontSize: "13px" }}>
-                      尚未新增分期帳單，可按「+ 新增」或「批次匯入」開始。
+                      尚未新增分期付款，可按「+ 新增」或「批次匯入」開始。
                     </div>
                   )
                   : (
@@ -3003,7 +3180,7 @@ export default function PersonalFinanceCashflowSimulator() {
                                   <TextField label="項目名稱" value={item.name} onChange={(value) => updateInstallment(item.id, { name: value })} disabled={readonlyShared} />
                                   <div className={`${inputGridClassName} mt-2.5`}>
                                     <Field label="本金" value={item.principal} onChange={(value) => updateInstallment(item.id, { principal: value })} disabled={readonlyShared} />
-                                    <Field label="年百分率 APR" value={item.apr} onChange={(value) => updateInstallment(item.id, { apr: value })} suffix="%" step={1} disabled={readonlyShared} />
+                                    <Field label="年百分率 APR" value={item.apr} onChange={(value) => updateInstallment(item.id, { apr: value })} suffix="%" step={0.1} precision={1} min={0} disabled={readonlyShared} />
                                     <Field label="期數" value={item.terms} onChange={(value) => updateInstallment(item.id, { terms: Math.max(1, Math.round(value)) })} step={1} min={1} disabled={readonlyShared} />
                                     <MonthPicker
                                       label="開始月份"
@@ -3041,7 +3218,7 @@ export default function PersonalFinanceCashflowSimulator() {
             </InteractiveSurface>
 
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <h2 style={styles.cardTitle}>匯入 / 備份 / 匯出</h2>
+              <h2 style={styles.cardTitle}>資料管理</h2>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}>
                 <InteractiveButton onClick={() => syncScenarioToCloud()} disabled={!cloudFeaturesEnabled}>
                   同步備份
@@ -3135,7 +3312,7 @@ export default function PersonalFinanceCashflowSimulator() {
           <div>
             <InteractiveSurface as="section" style={{ ...styles.card, position: "relative" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={trendChartRef}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
-                <h2 style={styles.cardTitle}>月底現金趨勢</h2>
+                <h2 style={styles.cardTitle}>每月剩餘現金變化</h2>
                 <InteractiveButton
                   variant="smallButton"
                   onClick={() => exportChartPng(trendChartRef, "cash-trend")}
@@ -3157,7 +3334,7 @@ export default function PersonalFinanceCashflowSimulator() {
 
             <InteractiveSurface as="section" style={{ ...styles.card, position: "relative" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={incomeChartRef}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
-                <h2 style={styles.cardTitle}>每月收入與支出</h2>
+                <h2 style={styles.cardTitle}>每月收支比較</h2>
                 <InteractiveButton
                   variant="smallButton"
                   onClick={() => exportChartPng(incomeChartRef, "income-expense")}
@@ -3174,7 +3351,7 @@ export default function PersonalFinanceCashflowSimulator() {
 
             <InteractiveSurface as="section" style={{ ...styles.card, position: "relative" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={compositionChartRef}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
-                <h2 style={styles.cardTitle}>支出組成堆疊面積圖</h2>
+                <h2 style={styles.cardTitle}>支出組成變化</h2>
                 <InteractiveButton
                   variant="smallButton"
                   onClick={() => exportChartPng(compositionChartRef, "expense-composition")}
@@ -3202,7 +3379,7 @@ export default function PersonalFinanceCashflowSimulator() {
 
         <InteractiveSurface as="section" style={{ ...styles.card, position: "relative", marginTop: "20px" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={monthDetailRef}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
-            <h2 style={styles.cardTitle}>月度明細</h2>
+            <h2 style={styles.cardTitle}>每月明細</h2>
             <InteractiveButton
               variant="smallButton"
               onClick={() => exportChartPng(monthDetailRef, "month-detail")}
