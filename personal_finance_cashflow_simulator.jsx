@@ -12,8 +12,10 @@ import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
 import {
   clearPendingCloudSync,
+  doesPendingCloudSyncMatchPayload,
   readDraftScenario,
   readPendingCloudSync,
+  resolveInitialCloudSyncStatus,
   resolveHydrationSource,
   writeDraftScenario,
   writePendingCloudSync,
@@ -2224,9 +2226,13 @@ export default function PersonalFinanceCashflowSimulator() {
       if (localDraft) {
         transitionApply(localDraft, { markDirty: false });
       }
-      if (pendingCloudSync) {
-        setCloudSyncStatus("pending");
-      }
+      setCloudSyncStatus(
+        resolveInitialCloudSyncStatus({
+          localDraft,
+          pendingCloudSync,
+          lastSyncedAt: sessionMeta.lastSyncedAt,
+        })
+      );
     }
     hydrationInitializedRef.current = true;
     setSessionMeta(writeSessionMeta({ lastOpenedAt: new Date().toISOString() }));
@@ -2763,12 +2769,17 @@ export default function PersonalFinanceCashflowSimulator() {
         setCloudNotice(error.message);
         return { error };
       }
+      let pendingStillMatchesSyncedPayload = true;
       if (typeof window !== "undefined" && window.localStorage) {
-        clearPendingCloudSync(window.localStorage);
+        const pendingCloudSync = readPendingCloudSync(window.localStorage);
+        pendingStillMatchesSyncedPayload = doesPendingCloudSyncMatchPayload(pendingCloudSync, safePayload);
+        if (pendingStillMatchesSyncedPayload) {
+          clearPendingCloudSync(window.localStorage);
+        }
       }
-      hasPendingCloudSyncRef.current = false;
+      hasPendingCloudSyncRef.current = !pendingStillMatchesSyncedPayload;
       setCloudBackupUpdatedAt(data?.updated_at || new Date().toISOString());
-      setCloudSyncStatus("synced");
+      setCloudSyncStatus(pendingStillMatchesSyncedPayload ? "synced" : "pending");
       setSessionMeta(writeSessionMeta({ lastSyncedAt: new Date().toISOString(), lastSyncAttemptAt: attemptAt }));
       setCloudNotice("目前內容已同步到雲端備份。");
       return { error: null };
