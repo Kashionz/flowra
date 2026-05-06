@@ -377,6 +377,20 @@ function formatTimestamp(value) {
   });
 }
 
+function formatRelativeTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = Date.now();
+  const diffSec = Math.round((now - date.getTime()) / 1000);
+  if (diffSec < 0) return "剛剛";
+  if (diffSec < 60) return "剛剛";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分鐘前`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小時前`;
+  if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)} 天前`;
+  return date.toLocaleDateString("zh-TW", { month: "2-digit", day: "2-digit" });
+}
+
 function monthOptions(baseMonth, count) {
   return Array.from({ length: count }, (_, index) => {
     const value = addMonths(baseMonth, index);
@@ -677,6 +691,48 @@ function IncomeExpenseChart({ rows, onSelectMonth, selectedMonthKey }) {
   );
 }
 
+function SegmentedControl({ value, onChange, options, ariaLabel }) {
+  return (
+    <div
+      role="group"
+      aria-label={ariaLabel}
+      style={{
+        display: "inline-flex",
+        gap: "2px",
+        padding: "3px",
+        background: "#f1f5f9",
+        border: "1px solid #e2e8f0",
+        borderRadius: "999px",
+      }}
+    >
+      {options.map((option) => {
+        const active = value === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={active}
+            style={{
+              padding: "5px 14px",
+              borderRadius: "999px",
+              border: `1px solid ${active ? "#e2e8f0" : "transparent"}`,
+              background: active ? "#ffffff" : "transparent",
+              color: active ? "#0f172a" : "#64748b",
+              fontWeight: active ? 700 : 600,
+              fontSize: "12px",
+              cursor: "pointer",
+              transition: "background 160ms ease, color 160ms ease, border-color 160ms ease",
+            }}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ExpenseCompositionChart({ rows, mode, view, setMode, setView, selectedMonthKey, hidden }) {
   if (!rows.length) return <EmptyChartState />;
   const seriesKeys = view === "category" ? CATEGORY_OPTIONS : ["fixed", "variable", "oneTime"];
@@ -721,39 +777,47 @@ function ExpenseCompositionChart({ rows, mode, view, setMode, setView, selectedM
 
   return (
     <div>
+      <div className="flowra-no-export" style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center", marginBottom: "12px" }}>
+        <SegmentedControl
+          ariaLabel="顯示模式"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: "absolute", label: "金額" },
+            { value: "ratio", label: "佔比" },
+          ]}
+        />
+        <SegmentedControl
+          ariaLabel="分組方式"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: "group", label: "群組" },
+            { value: "category", label: "分類" },
+          ]}
+        />
+      </div>
       {selectedRow ? (
-        <div style={{ ...styles.mutedBox, marginBottom: "12px" }}>
-          <div style={{ ...styles.label, marginBottom: "8px" }}>鑽取月份</div>
-          <div style={{ fontSize: "13px", color: "#334155", fontWeight: 700, marginBottom: "8px" }}>{selectedRow.fullLabel}</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "8px" }}>
+        <div style={{ marginBottom: "12px", padding: "10px 12px", borderRadius: "12px", border: "1px solid #e2e8f0", background: "#f8fafc" }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>鑽取月份</span>
+            <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}>{selectedRow.fullLabel}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", gap: "6px" }}>
             {seriesKeys.map((key) => {
               const amount = valueFor(selectedRow, key);
               const ratio = selectedTotal > 0 ? Math.round((amount / selectedTotal) * 1000) / 10 : 0;
               return (
-                <div key={key} style={{ background: "white", borderRadius: "14px", border: "1px solid #dbe4ee", padding: "10px" }}>
-                  <div style={{ fontSize: "12px", color: "#64748b", marginBottom: "4px" }}>{labels[key]}</div>
-                  <div style={{ fontSize: "14px", fontWeight: 800, color: "#0f172a" }}>{hidden ? "★★★" : `NT$ ${currency(amount)}`}</div>
-                  <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>{ratio}%</div>
+                <div key={key} style={{ background: "white", borderRadius: "10px", border: "1px solid #e2e8f0", padding: "8px 10px", borderLeft: `3px solid ${colors[key]}` }}>
+                  <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "2px" }}>{labels[key]}</div>
+                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>{hidden ? "★★★" : currency(amount)}</div>
+                  <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>{ratio}%</div>
                 </div>
               );
             })}
           </div>
         </div>
       ) : null}
-      <div className="flowra-no-export" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-        <InteractiveButton variant={mode === "absolute" ? "activePill" : "pillButton"} onClick={() => setMode("absolute")}>
-          絕對金額
-        </InteractiveButton>
-        <InteractiveButton variant={mode === "ratio" ? "activePill" : "pillButton"} onClick={() => setMode("ratio")}>
-          佔比百分比
-        </InteractiveButton>
-        <InteractiveButton variant={view === "group" ? "activePill" : "pillButton"} onClick={() => setView("group")}>
-          按支出群組
-        </InteractiveButton>
-        <InteractiveButton variant={view === "category" ? "activePill" : "pillButton"} onClick={() => setView("category")}>
-          按分類
-        </InteractiveButton>
-      </div>
       <ChartSurface
         ariaLabel={`支出組成堆疊面積圖，現在顯示${view === "category" ? "按分類" : "按支出群組"}與${mode === "ratio" ? "佔比百分比" : "絕對金額"}。`}
         config={chartConfig}
@@ -825,6 +889,47 @@ function Chevron({ open, size = 12 }) {
       }}
     >
       <path d="M4 2.5 L8 6 L4 9.5" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CopyIcon({ size = 14 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1.5" />
+      <path d="M9 4.5 V 3 A 1.5 1.5 0 0 0 7.5 1.5 H 3 A 1.5 1.5 0 0 0 1.5 3 V 7.5 A 1.5 1.5 0 0 0 3 9 H 4.5" />
+    </svg>
+  );
+}
+
+function TrashIcon({ size = 14 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 4 H 12" />
+      <path d="M5.5 4 V 2.5 H 8.5 V 4" />
+      <path d="M3.5 4 L 4.2 11.7 A 1.4 1.4 0 0 0 5.6 13 H 8.4 A 1.4 1.4 0 0 0 9.8 11.7 L 10.5 4" />
+      <path d="M5.8 6.5 V 10.5" />
+      <path d="M8.2 6.5 V 10.5" />
     </svg>
   );
 }
@@ -1411,25 +1516,6 @@ function StatCard({ label, value, hidden, danger }) {
   );
 }
 
-function OneTimePreview({ row, hidden }) {
-  const chips = row.oneTimeItems
-    .filter((item) => item.type === "expense")
-    .slice(0, 2)
-    .map((item) => CATEGORY_META[item.category] || CATEGORY_META.other);
-  if (!chips.length) {
-    return <span style={{ color: "#94a3b8" }}>無</span>;
-  }
-  return (
-    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" }}>
-      {chips.map((chip, index) => (
-        <span key={`${chip.label}-${index}`} style={{ ...styles.chip, color: chip.color, border: `1px solid ${chip.color}40`, background: `${chip.color}10` }}>
-          {chip.label}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function NetPill({ value, hidden }) {
   if (hidden) {
     return <span style={{ fontWeight: 700 }}>★★★</span>;
@@ -1493,7 +1579,9 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
               {row.oneTimeItems.filter((item) => item.type === "expense").length > 0 ? (
                 <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px dashed #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
                   <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>一次性</span>
-                  <OneTimePreview row={row} hidden={hidden} />
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#dc2626", fontVariantNumeric: "tabular-nums" }}>
+                    {hidden ? "★★★" : `NT$ ${currency(row.oneTimeExpense)}`}
+                  </span>
                 </div>
               ) : null}
               {readonly ? <div style={{ ...styles.readonlyBadge, marginTop: "8px" }}>唯讀</div> : null}
@@ -1561,9 +1649,7 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
                 <td style={{ ...subTd, ...groupBoundary }}>{hidden ? "★★★" : currency(row.rent)}</td>
                 <td style={subTd}>{hidden ? "★★★" : currency(row.living)}</td>
                 <td style={subTd}>{hidden ? "★★★" : currency(row.studentLoan)}</td>
-                <td style={subTd}>
-                  <OneTimePreview row={row} hidden={hidden} />
-                </td>
+                <td style={subTd}>{hidden ? "★★★" : currency(row.oneTimeExpense)}</td>
                 <td style={subTd}>{hidden ? "★★★" : currency(row.installments)}</td>
                 <td style={{ ...styles.td, ...groupBoundary, textAlign: "right" }}>
                   <NetPill value={row.net} hidden={hidden} />
@@ -1768,10 +1854,10 @@ const styles = {
     border: "1px solid #fecaca",
     background: "#fff1f2",
     color: "#be123c",
-    borderRadius: "12px",
-    padding: "8px 11px",
+    borderRadius: "999px",
+    padding: "5px 10px",
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 700,
     fontSize: "12px",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
@@ -1973,9 +2059,7 @@ export default function PersonalFinanceCashflowSimulator() {
       }),
     [generatedAt]
   );
-  const lastOpenedAtLabel = useMemo(() => formatTimestamp(sessionMeta.lastOpenedAt), [sessionMeta.lastOpenedAt]);
-  const lastSyncedAtLabel = useMemo(() => formatTimestamp(sessionMeta.lastSyncedAt), [sessionMeta.lastSyncedAt]);
-  const lastSyncAttemptAtLabel = useMemo(() => formatTimestamp(sessionMeta.lastSyncAttemptAt), [sessionMeta.lastSyncAttemptAt]);
+  const lastSyncedAtLabel = useMemo(() => formatRelativeTimestamp(sessionMeta.lastSyncedAt), [sessionMeta.lastSyncedAt]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -2507,14 +2591,6 @@ export default function PersonalFinanceCashflowSimulator() {
 
   const mainGridClassName = "flowra-main-grid grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,430px)_minmax(0,1fr)] xl:items-start";
   const inputGridClassName = "grid grid-cols-1 gap-3 sm:grid-cols-2";
-  const cloudAuthMessage =
-    cloudAuthState === "authenticated"
-      ? `已登入帳號${cloudUserEmail ? `（${cloudUserEmail}）` : ""}，可同步備份與還原。`
-      : cloudAuthState === "checking"
-        ? "正在檢查登入狀態。"
-        : cloudAuthState === "anonymous"
-          ? "尚未登入，請先寄送驗證信完成登入。"
-          : getSupabaseConfigHint();
   const cloudSetupMessage =
     cloudSetupState === "ready"
       ? "雲端備份已就緒。"
@@ -2526,6 +2602,19 @@ export default function PersonalFinanceCashflowSimulator() {
             ? "雲端備份狀態檢查失敗。"
             : getSupabaseConfigHint();
   const cloudFeaturesEnabled = cloudAuthState === "authenticated" && cloudSetupState === "ready";
+  const cloudStatusLine = (() => {
+    if (cloudAuthState === "checking") return "確認登入中…";
+    if (cloudAuthState !== "authenticated") return "登入後可啟用雲端備份";
+    if (cloudSetupState === "checking") return "檢查雲端狀態中…";
+    if (cloudSetupState !== "ready") return cloudSetupMessage;
+    const tail = lastSyncedAtLabel ? ` · ${lastSyncedAtLabel}` : "";
+    if (cloudSyncStatus === "syncing") return "同步中…";
+    if (cloudSyncStatus === "pending") return `有未同步變更${tail}`;
+    if (cloudSyncStatus === "synced") return `已同步${tail}`;
+    return lastSyncedAtLabel ? `已過期${tail}` : "尚未備份";
+  })();
+  const cloudStatusIsWarning =
+    cloudAuthState !== "authenticated" || (cloudAuthState === "authenticated" && cloudSetupState !== "ready" && cloudSetupState !== "checking");
 
   return (
     <div style={styles.page}>
@@ -2605,6 +2694,15 @@ export default function PersonalFinanceCashflowSimulator() {
         @keyframes flowra-surface-enter {
           from { opacity: 0; }
           to { opacity: 1; }
+        }
+        input[type="number"]::-webkit-outer-spin-button,
+        input[type="number"]::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        input[type="number"] {
+          -moz-appearance: textfield;
+          appearance: textfield;
         }
       `}</style>
       <div style={{ ...styles.container, ...styles.chartTheme }} className={`flowra-print-root${isPreparingPdf ? " flowra-pdf-export" : ""}${isPreparingReportExport ? " flowra-report-export" : ""}`} ref={reportRef}>
@@ -2695,7 +2793,7 @@ export default function PersonalFinanceCashflowSimulator() {
               </SettingsGroup>
             </InteractiveSurface>
 
-            <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
+            <InteractiveSurface as="section" style={{ ...styles.card, padding: "12px 18px", marginBottom: "12px" }} hoverClassName="flowra-hover-card">
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
                 <button
                   type="button"
@@ -2754,11 +2852,25 @@ export default function PersonalFinanceCashflowSimulator() {
                                   </div>
                                 </button>
                                 <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                                  <InteractiveButton variant="tinyButton" onClick={() => duplicateOneTimeItem(item.id)} disabled={readonlyShared}>
-                                    複製
+                                  <InteractiveButton
+                                    variant="tinyButton"
+                                    onClick={() => duplicateOneTimeItem(item.id)}
+                                    disabled={readonlyShared}
+                                    style={{ padding: "6px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                    title="複製"
+                                    aria-label="複製"
+                                  >
+                                    <CopyIcon />
                                   </InteractiveButton>
-                                  <InteractiveButton variant="dangerButton" style={{ padding: "5px 10px", borderRadius: "999px" }} onClick={() => removeOneTimeItem(item.id)} disabled={readonlyShared}>
-                                    刪
+                                  <InteractiveButton
+                                    variant="dangerButton"
+                                    onClick={() => removeOneTimeItem(item.id)}
+                                    disabled={readonlyShared}
+                                    style={{ padding: "6px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                    title="刪除"
+                                    aria-label="刪除"
+                                  >
+                                    <TrashIcon />
                                   </InteractiveButton>
                                 </div>
                               </div>
@@ -2805,7 +2917,7 @@ export default function PersonalFinanceCashflowSimulator() {
               </Collapsible>
             </InteractiveSurface>
 
-            <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
+            <InteractiveSurface as="section" style={{ ...styles.card, padding: "12px 18px", marginBottom: "12px" }} hoverClassName="flowra-hover-card">
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
                 <button
                   type="button"
@@ -2864,11 +2976,25 @@ export default function PersonalFinanceCashflowSimulator() {
                                   </div>
                                 </button>
                                 <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                                  <InteractiveButton variant="tinyButton" onClick={() => duplicateInstallment(item.id)} disabled={readonlyShared}>
-                                    複製
+                                  <InteractiveButton
+                                    variant="tinyButton"
+                                    onClick={() => duplicateInstallment(item.id)}
+                                    disabled={readonlyShared}
+                                    style={{ padding: "6px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                    title="複製"
+                                    aria-label="複製"
+                                  >
+                                    <CopyIcon />
                                   </InteractiveButton>
-                                  <InteractiveButton variant="dangerButton" style={{ padding: "5px 10px", borderRadius: "999px" }} onClick={() => removeInstallment(item.id)} disabled={readonlyShared}>
-                                    刪
+                                  <InteractiveButton
+                                    variant="dangerButton"
+                                    onClick={() => removeInstallment(item.id)}
+                                    disabled={readonlyShared}
+                                    style={{ padding: "6px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                    title="刪除"
+                                    aria-label="刪除"
+                                  >
+                                    <TrashIcon />
                                   </InteractiveButton>
                                 </div>
                               </div>
@@ -2953,24 +3079,14 @@ export default function PersonalFinanceCashflowSimulator() {
               </div>
               <input ref={fileInputRef} type="file" accept="application/json" onChange={importJson} style={{ display: "none" }} />
               <div style={{ ...styles.mutedBox, marginTop: "12px" }}>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>
-                  雲端備份狀態：
-                  {cloudSyncStatus === "syncing" ? "同步中" : null}
-                  {cloudSyncStatus === "pending" ? "內容已變更，尚未重新同步" : null}
-                  {cloudSyncStatus === "synced" ? "已同步備份" : null}
-                  {cloudSyncStatus === "idle" ? "尚未同步備份" : null}
+                <div style={{ ...styles.metaText, margin: 0, color: cloudStatusIsWarning ? "#b45309" : "#475569" }}>
+                  雲端備份：{cloudStatusLine}
                 </div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近雲端備份：{formatTimestamp(cloudBackupUpdatedAt)}</div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近開啟：{lastOpenedAtLabel}</div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近嘗試同步：{lastSyncAttemptAtLabel}</div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近同步備份：{lastSyncedAtLabel}</div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>{cloudAuthMessage}</div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>{cloudSetupMessage}</div>
                 {cloudNotice ? (
-                  <div style={{ ...styles.metaText, marginTop: "6px" }}>{cloudNotice}</div>
+                  <div style={{ ...styles.metaText, marginTop: "6px", color: "#dc2626" }}>{cloudNotice}</div>
                 ) : null}
-                <div style={{ marginTop: "12px", padding: "14px", borderRadius: "14px", border: "1px solid #e2e8f0", background: "#ffffff" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
+                <div style={{ marginTop: "12px", padding: "8px 14px", borderRadius: "14px", border: "1px solid #e2e8f0", background: "#ffffff" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: cloudAuthState === "authenticated" ? 0 : "10px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flex: 1 }}>
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#94a3b8", flexShrink: 0 }} aria-hidden="true">
                         <circle cx="8" cy="6" r="2.6" />
@@ -3086,7 +3202,7 @@ export default function PersonalFinanceCashflowSimulator() {
 
         <InteractiveSurface as="section" style={{ ...styles.card, position: "relative", marginTop: "20px" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={monthDetailRef}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
-            <h2 style={{ ...styles.cardTitle, margin: 0 }}>月度明細</h2>
+            <h2 style={styles.cardTitle}>月度明細</h2>
             <InteractiveButton
               variant="smallButton"
               onClick={() => exportChartPng(monthDetailRef, "month-detail")}
