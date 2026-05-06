@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./styles/flowra.css";
-import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from "lz-string";
 import { toPng } from "html-to-image";
 import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
-import QRCode from "qrcode";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -13,15 +11,13 @@ import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import {
   checkFlowraCloudSetup,
   createFlowraSupabaseClient,
-  createShortShareLink,
+  getLatestCloudBackup,
   getCurrentSupabaseUser,
   getSupabaseConfigHint,
   isSupabaseConfigured,
-  listCloudScenarios,
-  resolveShortShareLink,
   sendSupabaseMagicLink,
   signOutSupabase,
-  upsertCloudScenario,
+  upsertCloudBackup,
 } from "./lib/flowraSupabase.js";
 import {
   LineChart as RechartsLineChart,
@@ -40,6 +36,9 @@ import {
 } from "recharts";
 
 const SCHEMA_VERSION = 1;
+const DEFAULT_TEMPLATE_KEY = "current";
+const LEGACY_SCENARIO_NAME = "有房貸租屋族";
+const RENAMED_SCENARIO_NAME = "目前情境";
 const STORAGE_SESSION_META_KEY = "flowra.cashflow.session-meta";
 const SESSION_META_DEFAULT = {
   lastOpenedAt: "",
@@ -48,7 +47,7 @@ const SESSION_META_DEFAULT = {
 };
 const CATEGORY_META = {
   medical: { label: "醫療", color: "#dc2626" },
-  travel: { label: "旅遊", color: "#2563eb" },
+  travel: { label: "旅遊", color: "#0284c7" },
   gift: { label: "禮金", color: "#d946ef" },
   tax: { label: "稅務", color: "#ea580c" },
   tech: { label: "3C", color: "#7c3aed" },
@@ -82,6 +81,24 @@ function pad2(value) {
 function currentBaseMonth() {
   const today = new Date();
   return `${today.getFullYear()}-${pad2(today.getMonth() + 1)}`;
+}
+
+function exportFileBase(baseMonth) {
+  return `flowra-report-${baseMonth}`;
+}
+
+function normalizeLegacyScenarioName(value) {
+  const text = String(value || "").trim();
+  if (!text || !text.includes(LEGACY_SCENARIO_NAME)) return text;
+  return text.replaceAll(LEGACY_SCENARIO_NAME, RENAMED_SCENARIO_NAME);
+}
+
+function normalizeScenarioMeta(meta = {}, fallbackMeta = {}) {
+  return {
+    ...fallbackMeta,
+    ...meta,
+    name: normalizeLegacyScenarioName(meta.name || fallbackMeta.name || RENAMED_SCENARIO_NAME),
+  };
 }
 
 function parseYearMonth(value) {
@@ -123,9 +140,9 @@ function monthlyPayment(principal, aprPercent, terms) {
   return (p * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -months));
 }
 
-function createTemplateScenario(templateKey = "roommate") {
+function createTemplateScenario(templateKey = DEFAULT_TEMPLATE_KEY) {
   const baseMonth = currentBaseMonth();
-  const template = TEMPLATE_DEFINITIONS[templateKey] || TEMPLATE_DEFINITIONS.roommate;
+  const template = TEMPLATE_DEFINITIONS[templateKey] || TEMPLATE_DEFINITIONS[DEFAULT_TEMPLATE_KEY];
   return {
     schemaVersion: SCHEMA_VERSION,
     meta: {
@@ -168,7 +185,7 @@ function createTemplateScenario(templateKey = "roommate") {
 }
 
 function createDefaultScenario() {
-  return createTemplateScenario("roommate");
+  return createTemplateScenario(DEFAULT_TEMPLATE_KEY);
 }
 
 function cloneScenario(scenario, patch = {}) {
@@ -197,11 +214,13 @@ function migrateLegacyScenario(raw) {
   if (raw.schemaVersion === SCHEMA_VERSION && raw.meta && raw.basics) {
     return cloneScenario(template, {
       ...raw,
-      meta: {
-        ...template.meta,
-        ...(raw.meta || {}),
-        updatedAt: raw.meta?.updatedAt || new Date().toISOString(),
-      },
+      meta: normalizeScenarioMeta(
+        {
+          ...(raw.meta || {}),
+          updatedAt: raw.meta?.updatedAt || new Date().toISOString(),
+        },
+        template.meta
+      ),
       basics: {
         ...template.basics,
         ...(raw.basics || {}),
@@ -232,13 +251,16 @@ function migrateLegacyScenario(raw) {
   const baseMonth = raw.baseMonth || currentBaseMonth();
   return {
     schemaVersion: SCHEMA_VERSION,
-    meta: {
-      name: raw.name || "升級後情境",
-      description: "由舊版 month index 自動轉換",
-      baseMonth,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
+    meta: normalizeScenarioMeta(
+      {
+        name: raw.name || "升級後備份",
+        description: "由舊版 month index 自動轉換",
+        baseMonth,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      template.meta
+    ),
     basics: {
       startingTwd: n(raw.startingTwd),
       jpyCashTwd: n(raw.jpyCashTwd),
@@ -290,7 +312,7 @@ function toPersistedScenario(scenario) {
 
 function validateImportedScenario(raw) {
   if (!raw || typeof raw !== "object") {
-    return { ok: false, message: "JSON 內容不是有效的情境物件。" };
+    return { ok: false, message: "資料內容格式不正確。" };
   }
 
   if (raw.schemaVersion == null) {
@@ -302,7 +324,7 @@ function validateImportedScenario(raw) {
   }
 
   if (raw.schemaVersion > SCHEMA_VERSION) {
-    return { ok: false, message: `這份 JSON 來自較新的資料版本（v${raw.schemaVersion}），目前只支援到 v${SCHEMA_VERSION}。` };
+    return { ok: false, message: `這份資料來自較新的版本（v${raw.schemaVersion}），目前只支援到 v${SCHEMA_VERSION}。` };
   }
 
   if (raw.schemaVersion === SCHEMA_VERSION) {
@@ -534,36 +556,6 @@ function withTimeout(promise, timeoutMs, message) {
   });
 }
 
-function encodeScenarioShare(scenario, readonly) {
-  const payload = toPersistedScenario(scenario);
-  const encoded = compressToEncodedURIComponent(JSON.stringify(payload));
-  const url = new URL(window.location.href);
-  url.searchParams.set("state", encoded);
-  if (readonly) {
-    url.searchParams.set("readonly", "1");
-  } else {
-    url.searchParams.delete("readonly");
-  }
-  return { url: url.toString(), length: encoded.length };
-}
-
-function decodeScenarioShare() {
-  if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(window.location.search);
-  const encoded = params.get("state");
-  if (!encoded) return null;
-  try {
-    const json = decompressFromEncodedURIComponent(encoded);
-    if (!json) return null;
-    return {
-      scenario: migrateLegacyScenario(JSON.parse(json)),
-      readonly: params.get("readonly") === "1",
-    };
-  } catch (error) {
-    return null;
-  }
-}
-
 function EmptyChartState() {
   return (
     <div
@@ -629,7 +621,7 @@ function CashTrendChart({ rows, reserveLine, onSelectMonth, selectedMonthKey }) 
                 cx={cx}
                 cy={cy}
                 r={active ? 7 : 5}
-                fill={active ? "#1d4ed8" : CHART_COLORS.balance}
+                fill={active ? "#475569" : CHART_COLORS.balance}
                 stroke="white"
                 strokeWidth={2}
                 style={{ cursor: "pointer" }}
@@ -748,7 +740,7 @@ function ExpenseCompositionChart({ rows, mode, view, setMode, setView, selectedM
           </div>
         </div>
       ) : null}
-      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+      <div className="flowra-no-export" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
         <InteractiveButton variant={mode === "absolute" ? "activePill" : "pillButton"} onClick={() => setMode("absolute")}>
           絕對金額
         </InteractiveButton>
@@ -815,6 +807,142 @@ function ExpenseCompositionChart({ rows, mode, view, setMode, setView, selectedM
   );
 }
 
+const COLLAPSE_EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
+const COLLAPSE_DURATION = "300ms";
+
+function Chevron({ open, size = 12 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 12 12"
+      aria-hidden="true"
+      style={{
+        transform: open ? "rotate(90deg)" : "rotate(0deg)",
+        transition: `transform ${COLLAPSE_DURATION} ${COLLAPSE_EASE}`,
+        flexShrink: 0,
+        color: "#94a3b8",
+      }}
+    >
+      <path d="M4 2.5 L8 6 L4 9.5" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DownloadIcon({ size = 16 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 2 L8 10" />
+      <path d="M4.5 6.5 L8 10.5 L11.5 6.5" />
+      <path d="M3 13 L13 13" />
+    </svg>
+  );
+}
+
+function Collapsible({ open, children, topGap = 12 }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
+        transition: `grid-template-rows ${COLLAPSE_DURATION} ${COLLAPSE_EASE}, opacity ${COLLAPSE_DURATION} ${COLLAPSE_EASE}`,
+        opacity: open ? 1 : 0,
+      }}
+    >
+      <div style={{ overflow: "hidden", minHeight: 0 }}>
+        <div style={{ paddingTop: open ? topGap : 0, transition: `padding-top ${COLLAPSE_DURATION} ${COLLAPSE_EASE}` }}>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CountPill({ count, label = "筆" }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        padding: "2px 8px",
+        borderRadius: "999px",
+        background: "#f1f5f9",
+        color: "#64748b",
+        fontSize: "11px",
+        fontWeight: 700,
+        lineHeight: 1.5,
+      }}
+    >
+      {count} {label}
+    </span>
+  );
+}
+
+const sectionToggleStyle = {
+  flex: "1 1 auto",
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "4px 4px",
+  background: "transparent",
+  border: "none",
+  borderRadius: "8px",
+  cursor: "pointer",
+  textAlign: "left",
+  color: "#0f172a",
+  fontSize: "16px",
+  fontWeight: 800,
+  letterSpacing: "-0.01em",
+};
+
+const itemToggleStyle = {
+  flex: 1,
+  minWidth: 0,
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  padding: 0,
+  background: "transparent",
+  border: "none",
+  cursor: "pointer",
+  textAlign: "left",
+};
+
+function SettingsGroup({ title, accent, last, children }) {
+  return (
+    <div
+      style={{
+        ...styles.item,
+        borderLeft: `4px solid ${accent}`,
+        marginBottom: last ? 0 : "12px",
+      }}
+    >
+      <div
+        style={{
+          color: accent,
+          fontSize: "11px",
+          fontWeight: 800,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          marginBottom: "10px",
+        }}
+      >
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 function SortableItemShell({ id, children }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style = {
@@ -825,8 +953,8 @@ function SortableItemShell({ id, children }) {
   };
 
   return (
-    <div ref={setNodeRef} style={style}>
-      <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+    <div ref={setNodeRef} style={style} className="flowra-sortable-item">
+      <div style={{ display: "flex", gap: "4px", alignItems: "stretch" }}>
         <button
           type="button"
           {...attributes}
@@ -837,10 +965,18 @@ function SortableItemShell({ id, children }) {
           }}
           className={joinClassNames("flowra-drag-handle", isDragging ? "is-dragging" : "")}
           aria-label="拖拉排序"
+          title="拖拉排序"
         >
-          ⋮⋮
+          <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
+            <circle cx="2" cy="3" r="1.3" />
+            <circle cx="8" cy="3" r="1.3" />
+            <circle cx="2" cy="8" r="1.3" />
+            <circle cx="8" cy="8" r="1.3" />
+            <circle cx="2" cy="13" r="1.3" />
+            <circle cx="8" cy="13" r="1.3" />
+          </svg>
         </button>
-        <div style={{ flex: 1 }}>{children}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
       </div>
     </div>
   );
@@ -851,8 +987,8 @@ function getButtonVariantStyles(variant) {
     return {
       base: styles.button,
       hover: styles.buttonHover,
-      focus: { ...styles.inputFocus, transform: "translateY(-1px)" },
-      active: { transform: "translateY(0)", boxShadow: "0 7px 16px rgba(37,99,235,0.12)", border: "1px solid #93c5fd" },
+      focus: styles.inputFocus,
+      active: { background: "#e2e8f0", border: "1px solid #94a3b8" },
     };
   }
   if (variant === "smallButton") {
@@ -860,7 +996,7 @@ function getButtonVariantStyles(variant) {
       base: styles.smallButton,
       hover: styles.smallButtonHover,
       focus: styles.inputFocus,
-      active: { transform: "translateY(0)", boxShadow: "0 4px 12px rgba(15,23,42,0.08)", border: "1px solid #cbd5e1" },
+      active: { background: "#f1f5f9", border: "1px solid #cbd5e1" },
     };
   }
   if (variant === "tinyButton") {
@@ -868,39 +1004,39 @@ function getButtonVariantStyles(variant) {
       base: styles.tinyButton,
       hover: styles.tinyButtonHover,
       focus: styles.inputFocus,
-      active: { transform: "translateY(0)", boxShadow: "0 3px 10px rgba(15,23,42,0.08)", border: "1px solid #cbd5e1" },
+      active: { background: "#f1f5f9", border: "1px solid #cbd5e1" },
     };
   }
   if (variant === "pillButton") {
     return {
       base: styles.pillButton,
-      hover: { transform: "translateY(-1px)", boxShadow: "0 8px 18px rgba(15,23,42,0.06)", border: "1px solid #cbd5e1", background: "#f8fbff" },
+      hover: { border: "1px solid #cbd5e1", background: "#f8fafc" },
       focus: styles.inputFocus,
-      active: { transform: "translateY(0)", boxShadow: "0 3px 10px rgba(15,23,42,0.06)" },
+      active: { background: "#f1f5f9" },
     };
   }
   if (variant === "activePill") {
     return {
       base: styles.activePill,
-      hover: { transform: "translateY(-1px)", boxShadow: "0 10px 20px rgba(37,99,235,0.12)", background: "#bfdbfe", border: "1px solid #60a5fa" },
+      hover: { background: "#cbd5e1", border: "1px solid #94a3b8" },
       focus: styles.inputFocus,
-      active: { transform: "translateY(0)", boxShadow: "0 4px 12px rgba(37,99,235,0.1)" },
+      active: { background: "#cbd5e1" },
     };
   }
   if (variant === "dropdownItem") {
     return {
       base: styles.dropdownItem,
-      hover: { transform: "translateY(-1px)", boxShadow: "0 10px 18px rgba(15,23,42,0.08)", background: "#eff6ff" },
+      hover: { background: "#f8fafc" },
       focus: styles.inputFocus,
-      active: { transform: "translateY(0)", boxShadow: "0 4px 10px rgba(15,23,42,0.06)", background: "#dbeafe" },
+      active: { background: "#e2e8f0" },
     };
   }
   if (variant === "dangerButton") {
     return {
       base: styles.dangerButton,
-      hover: { transform: "translateY(-1px)", boxShadow: "0 10px 18px rgba(190,24,93,0.08)", background: "#ffe4e6", border: "1px solid #fda4af" },
+      hover: { background: "#ffe4e6", border: "1px solid #fda4af" },
       focus: styles.inputFocus,
-      active: { transform: "translateY(0)", boxShadow: "0 4px 10px rgba(190,24,93,0.06)" },
+      active: { background: "#fecdd3" },
     };
   }
   return { base: {}, hover: {}, focus: {}, active: {} };
@@ -1128,8 +1264,8 @@ function Field({ label, value, onChange, suffix = "", min, step = 1000, disabled
             onBlur={() => setIsFocused(false)}
             style={{
               ...styles.numberInput,
-              color: isFocused ? "#1d4ed8" : styles.numberInput.color,
-              background: isHovered || isFocused ? "rgba(239,246,255,0.34)" : "transparent",
+              color: isFocused ? "#475569" : styles.numberInput.color,
+              background: isHovered || isFocused ? "rgba(241,245,249,0.34)" : "transparent",
               cursor: disabled ? "not-allowed" : "text",
             }}
           />
@@ -1182,12 +1318,12 @@ function TextField({ label, value, onChange, disabled, type = "text", placeholde
   return (
     <div>
       {label ? <label style={styles.label}>{label}</label> : null}
-      <InteractiveInput type={type} value={value} placeholder={placeholder} disabled={disabled} onChange={(event) => onChange(event.target.value)} style={{ fontWeight: 700 }} />
+      <InteractiveInput type={type} value={value} placeholder={placeholder} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
 
-function MonthPicker({ label, value, onChange, baseMonth, horizon, disabled, showRelative = false }) {
+function MonthPicker({ label, value, onChange, baseMonth, horizon, disabled }) {
   const options = monthOptions(addMonths(baseMonth, -1), horizon + 13);
   const fallbackValue = options[0]?.value || baseMonth;
   const safeValue = options.some((option) => option.value === value) ? value : fallbackValue;
@@ -1220,11 +1356,11 @@ function MonthPicker({ label, value, onChange, baseMonth, horizon, disabled, sho
   return (
     <div>
       <label style={styles.label}>{label}</label>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(0, 1fr)", gap: "8px" }}>
         <InteractiveSelect value={parsed.year} disabled={disabled} onChange={(event) => changeYear(Number(event.target.value))}>
           {years.map((year) => (
             <option key={year} value={year}>
-              {year} 年
+              {year}
             </option>
           ))}
         </InteractiveSelect>
@@ -1236,16 +1372,6 @@ function MonthPicker({ label, value, onChange, baseMonth, horizon, disabled, sho
           ))}
         </InteractiveSelect>
       </div>
-      {showRelative ? (
-        <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
-          <InteractiveButton variant="tinyButton" disabled={disabled} onClick={() => onChange(addMonths(baseMonth, 1))}>
-            下個月
-          </InteractiveButton>
-          <InteractiveButton variant="tinyButton" disabled={disabled} onClick={() => onChange(addMonths(baseMonth, 2))}>
-            再下個月
-          </InteractiveButton>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1256,11 +1382,11 @@ function BaseMonthPicker({ value, onChange, disabled }) {
   return (
     <div>
       <label style={styles.label}>試算起始月</label>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(0, 1fr)", gap: "8px" }}>
         <InteractiveSelect value={parsed.year} disabled={disabled} onChange={(event) => onChange(formatYearMonth(Number(event.target.value), parsed.month))}>
           {years.map((year) => (
             <option key={year} value={year}>
-              {year} 年
+              {year}
             </option>
           ))}
         </InteractiveSelect>
@@ -1304,14 +1430,41 @@ function OneTimePreview({ row, hidden }) {
   );
 }
 
+function NetPill({ value, hidden }) {
+  if (hidden) {
+    return <span style={{ fontWeight: 700 }}>★★★</span>;
+  }
+  const positive = value >= 0;
+  const color = positive ? "#047857" : "#dc2626";
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "2px",
+        padding: "2px 8px",
+        borderRadius: "999px",
+        fontWeight: 700,
+        fontSize: "12px",
+        color,
+        background: `${color}12`,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      {positive ? "+" : "−"}{currency(Math.abs(value))}
+    </span>
+  );
+}
+
 function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, readonly }) {
   if (!rows.length) return <EmptyChartState />;
 
   if (mobile) {
     return (
-      <div style={{ display: "grid", gap: "12px" }}>
-        {rows.map((row, index) => {
+      <div style={{ display: "grid", gap: "10px" }}>
+        {rows.map((row) => {
           const active = row.monthKey === selectedMonthKey;
+          const balanceNegative = row.balance < 0;
           return (
             <div
               key={row.monthKey}
@@ -1319,28 +1472,31 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
                 monthRefs.current[row.monthKey] = node;
               }}
               style={{
-                border: active ? "2px solid #2563eb" : "1px solid #dbe4ee",
-                borderRadius: "20px",
-                padding: "15px",
-                background: active ? "#eff6ff" : index % 2 === 0 ? "rgba(255,255,255,0.96)" : "#f8fbff",
-                boxShadow: active ? "0 12px 26px rgba(37,99,235,0.08)" : "0 6px 16px rgba(15,23,42,0.04)",
+                border: `1px solid ${active ? "#0284c7" : "#e2e8f0"}`,
+                borderLeft: `3px solid ${active ? "#0284c7" : balanceNegative ? "#dc2626" : "#e2e8f0"}`,
+                borderRadius: "14px",
+                padding: "12px 14px",
+                background: active ? "#f0f9ff" : "#ffffff",
+                transition: `background ${MOTION.fast}, border-color ${MOTION.fast}`,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", marginBottom: "10px" }}>
-                <strong>{row.fullLabel}</strong>
-                <span style={{ color: row.net < 0 ? "#dc2626" : "#047857", fontWeight: 800 }}>{hidden ? "★★★" : `${row.net < 0 ? "-" : "+"}NT$ ${currency(Math.abs(row.net))}`}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px" }}>
+                <strong style={{ fontSize: "14px", color: "#0f172a" }}>{row.fullLabel}</strong>
+                <NetPill value={row.net} hidden={hidden} />
               </div>
-              <div style={styles.mobileMetrics}>
-                <div>月初：{maskCurrency(row.startBalance, hidden)}</div>
-                <div>收入：{maskCurrency(row.income, hidden)}</div>
-                <div>支出：{maskCurrency(row.expense, hidden)}</div>
-                <div>月底：{maskCurrency(row.balance, hidden)}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px 14px", fontSize: "12px" }}>
+                <MobileStat label="月初現金" value={row.startBalance} hidden={hidden} />
+                <MobileStat label="月底現金" value={row.balance} hidden={hidden} danger={balanceNegative} />
+                <MobileStat label="收入合計" value={row.income} hidden={hidden} accent="#047857" />
+                <MobileStat label="支出合計" value={row.expense} hidden={hidden} accent="#dc2626" />
               </div>
-              <div style={{ marginTop: "10px" }}>
-                <div style={styles.label}>一次支出分類</div>
-                <OneTimePreview row={row} hidden={hidden} />
-              </div>
-              {readonly ? <div style={styles.readonlyBadge}>唯讀分享</div> : null}
+              {row.oneTimeItems.filter((item) => item.type === "expense").length > 0 ? (
+                <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px dashed #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#94a3b8", letterSpacing: "0.05em", textTransform: "uppercase" }}>一次性</span>
+                  <OneTimePreview row={row} hidden={hidden} />
+                </div>
+              ) : null}
+              {readonly ? <div style={{ ...styles.readonlyBadge, marginTop: "8px" }}>唯讀</div> : null}
             </div>
           );
         })}
@@ -1348,28 +1504,42 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
     );
   }
 
+  const groupBoundary = { borderLeft: "1px solid #f1f5f9" };
+  const sectionHead = { ...styles.th, fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "#94a3b8", padding: "8px 10px 4px" };
+  const numericTd = { ...styles.td, fontVariantNumeric: "tabular-nums" };
+  const subTd = { ...numericTd, color: "#64748b", fontSize: "12px" };
+
   return (
     <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
+            <th style={{ ...sectionHead, textAlign: "left" }}></th>
+            <th style={sectionHead}>結餘</th>
+            <th colSpan={3} style={{ ...sectionHead, ...groupBoundary, color: "#047857" }}>收入</th>
+            <th colSpan={5} style={{ ...sectionHead, ...groupBoundary, color: "#dc2626" }}>支出</th>
+            <th colSpan={2} style={{ ...sectionHead, ...groupBoundary }}>結算</th>
+          </tr>
+          <tr>
             <th style={{ ...styles.th, textAlign: "left" }}>月份</th>
             <th style={styles.th}>月初現金</th>
-            <th style={styles.th}>薪資</th>
+            <th style={{ ...styles.th, ...groupBoundary }}>薪資</th>
             <th style={styles.th}>補貼</th>
-            <th style={styles.th}>一次收入</th>
-            <th style={styles.th}>房租</th>
+            <th style={styles.th}>一次性</th>
+            <th style={{ ...styles.th, ...groupBoundary }}>房租</th>
             <th style={styles.th}>生活費</th>
             <th style={styles.th}>學貸</th>
-            <th style={styles.th}>一次支出分類</th>
+            <th style={styles.th}>一次性</th>
             <th style={styles.th}>分期</th>
-            <th style={styles.th}>月淨額</th>
+            <th style={{ ...styles.th, ...groupBoundary }}>月淨額</th>
             <th style={styles.th}>月底現金</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row, index) => {
             const active = row.monthKey === selectedMonthKey;
+            const balanceNegative = row.balance < 0;
+            const stripBg = index % 2 === 0 ? "#ffffff" : "#fafbfc";
             return (
               <InteractiveSurface
                 as="tr"
@@ -1377,28 +1547,45 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
                 ref={(node) => {
                   monthRefs.current[row.monthKey] = node;
                 }}
-                style={{ ...styles.tableRow, background: active ? "#eff6ff" : index % 2 === 0 ? "white" : "#fbfdff" }}
+                style={{ ...styles.tableRow, background: active ? "#f0f9ff" : stripBg }}
                 className={joinClassNames("flowra-table-row", active ? "is-active" : "")}
               >
-                <td style={{ ...styles.td, textAlign: "left", fontWeight: 700 }}>{row.fullLabel}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.startBalance)}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.salary)}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.subsidy)}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.oneTimeIncome)}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.rent)}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.living)}</td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.studentLoan)}</td>
-                <td style={styles.td}>
+                <td style={{ ...styles.td, textAlign: "left", fontWeight: 700, color: "#0f172a" }}>
+                  {active ? <span style={{ display: "inline-block", width: "3px", height: "14px", borderRadius: "3px", background: "#0284c7", verticalAlign: "middle", marginRight: "8px" }} /> : null}
+                  {row.fullLabel}
+                </td>
+                <td style={numericTd}>{hidden ? "★★★" : currency(row.startBalance)}</td>
+                <td style={{ ...subTd, ...groupBoundary }}>{hidden ? "★★★" : currency(row.salary)}</td>
+                <td style={subTd}>{hidden ? "★★★" : currency(row.subsidy)}</td>
+                <td style={subTd}>{hidden ? "★★★" : currency(row.oneTimeIncome)}</td>
+                <td style={{ ...subTd, ...groupBoundary }}>{hidden ? "★★★" : currency(row.rent)}</td>
+                <td style={subTd}>{hidden ? "★★★" : currency(row.living)}</td>
+                <td style={subTd}>{hidden ? "★★★" : currency(row.studentLoan)}</td>
+                <td style={subTd}>
                   <OneTimePreview row={row} hidden={hidden} />
                 </td>
-                <td style={styles.td}>{hidden ? "★★★" : currency(row.installments)}</td>
-                <td style={{ ...styles.td, fontWeight: 800, color: row.net < 0 ? "#dc2626" : "#047857" }}>{hidden ? "★★★" : currency(row.net)}</td>
-                <td style={{ ...styles.td, fontWeight: 800, color: row.balance < 0 ? "#dc2626" : "#0f172a" }}>{hidden ? "★★★" : currency(row.balance)}</td>
+                <td style={subTd}>{hidden ? "★★★" : currency(row.installments)}</td>
+                <td style={{ ...styles.td, ...groupBoundary, textAlign: "right" }}>
+                  <NetPill value={row.net} hidden={hidden} />
+                </td>
+                <td style={{ ...numericTd, fontWeight: 800, color: balanceNegative ? "#dc2626" : "#0f172a" }}>{hidden ? "★★★" : currency(row.balance)}</td>
               </InteractiveSurface>
             );
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function MobileStat({ label, value, hidden, accent, danger }) {
+  const valueColor = danger ? "#dc2626" : accent || "#0f172a";
+  return (
+    <div>
+      <div style={{ fontSize: "11px", color: "#94a3b8", fontWeight: 700, letterSpacing: "0.04em", marginBottom: "2px" }}>{label}</div>
+      <div style={{ fontSize: "13px", fontWeight: 700, color: valueColor, fontVariantNumeric: "tabular-nums" }}>
+        {hidden ? "★★★" : `NT$ ${currency(value)}`}
+      </div>
     </div>
   );
 }
@@ -1414,8 +1601,7 @@ const INTERACTIVE_WILL_CHANGE = "transform, box-shadow";
 const styles = {
   page: {
     minHeight: "100vh",
-    background:
-      "radial-gradient(circle at top, rgba(191,219,254,0.55), transparent 30%), linear-gradient(180deg, #f8fbff 0%, #eef4fb 48%, #f8fafc 100%)",
+    background: "#f8fafc",
     color: "#0f172a",
     fontFamily: "'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif",
     padding: "28px 18px 40px",
@@ -1430,54 +1616,49 @@ const styles = {
     flexWrap: "wrap",
     padding: "22px 24px",
     borderRadius: "30px",
-    border: "1px solid rgba(191,219,254,0.7)",
-    background: "linear-gradient(145deg, rgba(255,255,255,0.9), rgba(239,246,255,0.76))",
-    boxShadow: "0 20px 60px rgba(15,23,42,0.07)",
-    backdropFilter: "blur(10px)",
+    border: "1px solid rgba(203,213,225,0.7)",
+    background: "#ffffff",
   },
   badge: {
     display: "inline-flex",
     alignItems: "center",
     background: "rgba(255,255,255,0.94)",
-    border: "1px solid rgba(191,219,254,0.9)",
+    border: "1px solid rgba(203,213,225,0.9)",
     borderRadius: "999px",
     padding: "7px 13px",
     fontSize: "11px",
     fontWeight: 800,
     letterSpacing: "0.08em",
-    color: "#2563eb",
-    boxShadow: "0 10px 28px rgba(37,99,235,0.07)",
+    color: "#475569",
     textTransform: "uppercase",
   },
   title: { fontSize: "clamp(32px, 5vw, 46px)", lineHeight: 1.04, fontWeight: 900, letterSpacing: "-0.03em", margin: "16px 0 10px" },
   subtitle: { maxWidth: "780px", fontSize: "14px", color: "#475569", lineHeight: 1.8, margin: 0 },
   button: {
-    border: "1px solid #c7d2fe",
-    background: "linear-gradient(180deg, #ffffff 0%, #eff6ff 100%)",
-    color: "#1e3a8a",
-    borderRadius: "18px",
+    border: "1px solid #e2e8f0",
+    background: "#f8fafc",
+    color: "#334155",
+    borderRadius: "14px",
     padding: "10px 15px",
     cursor: "pointer",
     fontWeight: 800,
-    boxShadow: "0 10px 20px rgba(37,99,235,0.08)",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
-  buttonHover: { transform: "translateY(-1px)", boxShadow: "0 14px 26px rgba(37,99,235,0.14)", border: "1px solid #93c5fd" },
+  buttonHover: { background: "#f1f5f9", border: "1px solid #cbd5e1" },
   smallButton: {
     border: "1px solid #dbe4ee",
-    background: "rgba(255,255,255,0.94)",
+    background: "#ffffff",
     color: "#0f172a",
     borderRadius: "14px",
     padding: "8px 12px",
     cursor: "pointer",
     fontWeight: 700,
     fontSize: "13px",
-    boxShadow: "0 6px 18px rgba(15,23,42,0.04)",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
-  smallButtonHover: { transform: "translateY(-1px)", boxShadow: "0 10px 22px rgba(15,23,42,0.08)", border: "1px solid #cbd5e1" },
+  smallButtonHover: { background: "#f8fafc", border: "1px solid #cbd5e1" },
   tinyButton: {
     border: "1px solid #dbe4ee",
     background: "#f8fafc",
@@ -1490,17 +1671,16 @@ const styles = {
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
-  tinyButtonHover: { transform: "translateY(-1px)", boxShadow: "0 8px 18px rgba(15,23,42,0.08)", border: "1px solid #cbd5e1" },
+  tinyButtonHover: { background: "#f1f5f9", border: "1px solid #cbd5e1" },
   numberFieldWrap: {
     flex: 1,
     display: "grid",
     gridTemplateColumns: "minmax(0, 1fr) 42px",
     alignItems: "stretch",
     minHeight: "42px",
-    border: "1px solid #bfdbfe",
+    border: "1px solid #cbd5e1",
     borderRadius: "16px",
-    background: "linear-gradient(180deg, rgba(255,255,255,1) 0%, rgba(248,250,252,0.98) 100%)",
-    boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03), 0 8px 18px rgba(37,99,235,0.08)",
+    background: "#ffffff",
     overflow: "hidden",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
@@ -1514,20 +1694,20 @@ const styles = {
     outline: "none",
     padding: "8px 14px",
     fontSize: "14px",
-    fontWeight: 800,
+    fontWeight: 500,
     background: "transparent",
     color: "#0f172a",
   },
   stepperColumn: {
     display: "grid",
     gridTemplateRows: "1fr 1fr",
-    borderLeft: "1px solid #bfdbfe",
-    background: "linear-gradient(180deg, #eef6ff 0%, #dbeafe 100%)",
+    borderLeft: "1px solid #cbd5e1",
+    background: "#f8fafc",
   },
   stepperButton: {
     border: "none",
     background: "transparent",
-    color: "#1d4ed8",
+    color: "#475569",
     cursor: "pointer",
     fontWeight: 900,
     fontSize: "10px",
@@ -1538,23 +1718,27 @@ const styles = {
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
-  stepperButtonHover: { background: "rgba(255,255,255,0.52)", color: "#1e40af" },
+  stepperButtonHover: { background: "rgba(255,255,255,0.52)", color: "#1e293b" },
   stepperButtonTop: {
-    borderBottom: "1px solid #bfdbfe",
+    borderBottom: "1px solid #cbd5e1",
   },
   stepperButtonBottom: {},
   dragHandle: {
-    border: "1px solid #dbe4ee",
-    background: "#f8fafc",
-    color: "#64748b",
-    borderRadius: "12px",
-    width: "36px",
-    height: "36px",
+    border: "1px solid transparent",
+    background: "transparent",
+    color: "#cbd5e1",
+    borderRadius: "8px",
+    width: "18px",
+    minHeight: "32px",
+    alignSelf: "stretch",
+    padding: 0,
     cursor: "grab",
-    fontWeight: 800,
-    fontSize: "16px",
-    lineHeight: 1,
-    transition: INTERACTIVE_TRANSITION,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    opacity: 0.45,
+    transition: "opacity 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease",
   },
   pillButton: {
     border: "1px solid #dbe4ee",
@@ -1569,9 +1753,9 @@ const styles = {
     willChange: INTERACTIVE_WILL_CHANGE,
   },
   activePill: {
-    border: "1px solid #93c5fd",
-    background: "#dbeafe",
-    color: "#1d4ed8",
+    border: "1px solid #cbd5e1",
+    background: "#e2e8f0",
+    color: "#475569",
     borderRadius: "999px",
     padding: "8px 13px",
     cursor: "pointer",
@@ -1594,21 +1778,18 @@ const styles = {
   },
   summaryGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "18px", marginBottom: "26px" },
   card: {
-    background: "rgba(255,255,255,0.9)",
-    borderRadius: "28px",
-    border: "1px solid rgba(226,232,240,0.9)",
-    boxShadow: "0 16px 38px rgba(15,23,42,0.05)",
+    background: "#ffffff",
+    borderRadius: "20px",
+    border: "1px solid #e2e8f0",
     padding: "22px",
     marginBottom: "20px",
-    backdropFilter: "blur(12px)",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
   statCard: {
-    background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.95) 100%)",
-    borderRadius: "24px",
-    border: "1px solid rgba(226,232,240,0.92)",
-    boxShadow: "0 14px 32px rgba(15,23,42,0.045)",
+    background: "#ffffff",
+    borderRadius: "16px",
+    border: "1px solid #e2e8f0",
     padding: "18px 18px 16px",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
@@ -1629,34 +1810,45 @@ const styles = {
     borderRadius: "14px",
     padding: "8px 12px",
     fontSize: "14px",
-    background: "rgba(255,255,255,0.96)",
-    boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03)",
+    background: "#ffffff",
     transition: INTERACTIVE_TRANSITION,
   },
-  inputHover: { border: "1px solid #93c5fd", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03), 0 0 0 3px rgba(191,219,254,0.26)" },
-  inputFocus: { border: "1px solid #60a5fa", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03), 0 0 0 4px rgba(96,165,250,0.22)" },
+  inputHover: { border: "1px solid #cbd5e1" },
+  inputFocus: { border: "1px solid #94a3b8", boxShadow: "0 0 0 3px rgba(148,163,184,0.22)" },
   select: {
     width: "100%",
+    boxSizing: "border-box",
     height: "40px",
+    minWidth: 0,
     border: "1px solid #cbd5e1",
     borderRadius: "14px",
-    padding: "8px 12px",
-    background: "rgba(255,255,255,0.96)",
+    padding: "8px 26px 8px 10px",
+    fontSize: "13px",
+    color: "#0f172a",
+    background: "#ffffff",
+    backgroundImage:
+      "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5 L5 6.5 L8 3.5' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>\")",
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "right 9px center",
+    backgroundSize: "10px 10px",
+    appearance: "none",
+    WebkitAppearance: "none",
+    MozAppearance: "none",
     transition: INTERACTIVE_TRANSITION,
   },
   item: {
     border: "1px solid #e2e8f0",
-    borderRadius: "20px",
-    background: "linear-gradient(180deg, #ffffff 0%, #fbfdff 100%)",
+    borderRadius: "16px",
+    background: "#ffffff",
     padding: "14px",
     marginBottom: "12px",
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
-  mutedBox: { background: "linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%)", borderRadius: "18px", padding: "14px", marginTop: "12px", border: "1px solid #e2e8f0" },
+  mutedBox: { background: "#f8fafc", borderRadius: "14px", padding: "14px", marginTop: "12px", border: "1px solid #e2e8f0" },
   miniGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "8px", fontSize: "12px" },
-  alert: { display: "flex", gap: "12px", background: "linear-gradient(180deg, #fff8f8 0%, #fff1f2 100%)", border: "1px solid #fecdd3", color: "#be123c", padding: "16px 18px", borderRadius: "22px", marginBottom: "24px", boxShadow: "0 12px 28px rgba(190,24,93,0.06)" },
-  tableWrap: { overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "22px", background: "white", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7)" },
+  alert: { display: "flex", gap: "12px", background: "#fff1f2", border: "1px solid #fecdd3", color: "#be123c", padding: "16px 18px", borderRadius: "16px", marginBottom: "24px" },
+  tableWrap: { overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: "16px", background: "white" },
   table: { width: "100%", minWidth: "1120px", borderCollapse: "collapse", fontSize: "13px" },
   th: { background: "#f8fafc", color: "#475569", textAlign: "right", padding: "12px 10px", fontSize: "12px", fontWeight: 800, borderBottom: "1px solid #e2e8f0", position: "sticky", top: 0, zIndex: 1 },
   tableRow: { transition: `background ${MOTION.fast}` },
@@ -1680,7 +1872,6 @@ const styles = {
     borderRadius: "16px",
     border: "1px solid #dbe4ee",
     background: "white",
-    boxShadow: "0 18px 40px rgba(15, 23, 42, 0.14)",
     padding: "8px",
     display: "grid",
     gap: "6px",
@@ -1707,11 +1898,10 @@ const styles = {
     borderRadius: "20px",
     border: "1px solid #dbe4ee",
     background: "white",
-    boxShadow: "0 24px 60px rgba(15,23,42,0.18)",
     padding: "14px",
     zIndex: 30,
   },
-  readonlyBadge: { marginTop: "10px", display: "inline-block", borderRadius: "999px", padding: "5px 9px", background: "#eff6ff", color: "#1d4ed8", fontSize: "11px", fontWeight: 800 },
+  readonlyBadge: { marginTop: "10px", display: "inline-block", borderRadius: "999px", padding: "5px 9px", background: "#f8fafc", color: "#475569", fontSize: "11px", fontWeight: 800 },
   mobileMetrics: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px", fontSize: "13px", color: "#334155" },
   modalBackdrop: { position: "fixed", inset: 0, background: "rgba(15,23,42,0.48)", display: "grid", placeItems: "center", padding: "20px", zIndex: 50 },
   modalCard: {
@@ -1719,34 +1909,22 @@ const styles = {
     background: "white",
     borderRadius: "24px",
     border: "1px solid #dbe4ee",
-    boxShadow: "0 24px 60px rgba(15,23,42,0.2)",
     padding: "20px",
   },
 };
 
 export default function PersonalFinanceCashflowSimulator() {
-  const shared = useMemo(() => decodeScenarioShare(), []);
-  const [scenario, setScenario] = useState(() => {
-    if (shared?.scenario) return shared.scenario;
-    return createDefaultScenario();
-  });
+  const [scenario, setScenario] = useState(() => createDefaultScenario());
   const [sessionMeta, setSessionMeta] = useState(() => readSessionMeta());
-  const [cloudScenarioId, setCloudScenarioId] = useState("");
+  const [cloudBackupUpdatedAt, setCloudBackupUpdatedAt] = useState("");
   const [selectedMonthKey, setSelectedMonthKey] = useState("");
   const [expenseMode, setExpenseMode] = useState("absolute");
   const [expenseView, setExpenseView] = useState("group");
-  const [readonlyShared, setReadonlyShared] = useState(Boolean(shared?.readonly));
   const [isOneTimeOpen, setIsOneTimeOpen] = useState(false);
   const [isInstallmentsOpen, setIsInstallmentsOpen] = useState(false);
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [openOneTimeItemIds, setOpenOneTimeItemIds] = useState({});
   const [openInstallmentItemIds, setOpenInstallmentItemIds] = useState({});
-  const [shareNotice, setShareNotice] = useState("");
-  const [shareReadonly, setShareReadonly] = useState(true);
-  const [shareTab, setShareTab] = useState("url");
-  const [shortShareUrl, setShortShareUrl] = useState("");
-  const [shortShareSnapshotKey, setShortShareSnapshotKey] = useState("");
-  const [shareQrUrl, setShareQrUrl] = useState("");
   const [cloudNotice, setCloudNotice] = useState("");
   const [cloudSyncStatus, setCloudSyncStatus] = useState("idle");
   const [cloudAuthState, setCloudAuthState] = useState(() => (isSupabaseConfigured() ? "checking" : "unconfigured"));
@@ -1754,19 +1932,16 @@ export default function PersonalFinanceCashflowSimulator() {
   const [cloudUserEmail, setCloudUserEmail] = useState("");
   const [authEmailInput, setAuthEmailInput] = useState("");
   const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
-  const [cloudScenarios, setCloudScenarios] = useState([]);
-  const [selectedCloudScenarioId, setSelectedCloudScenarioId] = useState("");
-  const [isCloudListLoading, setIsCloudListLoading] = useState(false);
-  const [isSharePopoverOpen, setIsSharePopoverOpen] = useState(false);
+  const [isCloudBackupLoading, setIsCloudBackupLoading] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isPreparingPdf, setIsPreparingPdf] = useState(false);
+  const [isPreparingReportExport, setIsPreparingReportExport] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1200 : window.innerWidth));
   const [bulkInstallmentText, setBulkInstallmentText] = useState("");
   const [bulkInstallmentErrors, setBulkInstallmentErrors] = useState([]);
   const [bulkInstallmentPreview, setBulkInstallmentPreview] = useState([]);
   const monthRefs = useRef({});
   const fileInputRef = useRef(null);
-  const sharePopoverRef = useRef(null);
   const cloudHydratedRef = useRef(false);
   const scenarioInitializedRef = useRef(false);
   const skipNextScenarioDirtyRef = useRef(false);
@@ -1774,16 +1949,12 @@ export default function PersonalFinanceCashflowSimulator() {
   const trendChartRef = useRef(null);
   const incomeChartRef = useRef(null);
   const compositionChartRef = useRef(null);
+  const monthDetailRef = useRef(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const mobile = viewportWidth < 860;
   const hiddenAmounts = false;
+  const readonlyShared = false;
   const supabaseReady = useMemo(() => isSupabaseConfigured(), []);
-  const standardShare = useMemo(() => {
-    if (typeof window === "undefined") return { url: "", length: 0 };
-    return encodeScenarioShare(scenario, shareReadonly);
-  }, [scenario, shareReadonly]);
-  const shareUrl = standardShare.url;
-  const currentShareSnapshotKey = `${scenario.meta.updatedAt || ""}|${shareReadonly ? "readonly" : "editable"}`;
   const projectionResult = useMemo(() => buildProjection(scenario), [scenario]);
   const rows = Array.isArray(projectionResult) ? projectionResult : projectionResult.rows;
   const installmentRows = Array.isArray(projectionResult) ? [] : projectionResult.installmentRows;
@@ -1828,81 +1999,6 @@ export default function PersonalFinanceCashflowSimulator() {
   }, []);
 
   useEffect(() => {
-    const source = shareTab === "url" ? shareUrl : shortShareUrl;
-    if (!source) {
-      setShareQrUrl("");
-      return;
-    }
-
-    let cancelled = false;
-    QRCode.toDataURL(source, {
-      width: 180,
-      margin: 1,
-      color: {
-        dark: "#0f172a",
-        light: "#ffffff",
-      },
-    })
-      .then((dataUrl) => {
-        if (!cancelled) {
-          setShareQrUrl(dataUrl);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setShareQrUrl("");
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [shareTab, shareUrl, shortShareUrl]);
-
-  useEffect(() => {
-    if (!shareUrl) {
-      setShareNotice("");
-      return;
-    }
-    setShareNotice(
-      standardShare.length > 1800
-        ? (supabaseReady ? "URL 已超過 1800 字，複製時會改走短網址。" : "URL 已偏長；若設定 Supabase，建議改用短網址。")
-        : "URL 編碼版已即時更新，可直接複製。"
-    );
-  }, [shareUrl, standardShare.length, supabaseReady]);
-
-  useEffect(() => {
-    if (!shortShareUrl || !shortShareSnapshotKey || shortShareSnapshotKey === currentShareSnapshotKey) return;
-    setShortShareUrl("");
-    setShortShareSnapshotKey("");
-    setCloudNotice("目前內容已變更，請重新建立短網址。");
-  }, [shortShareSnapshotKey, currentShareSnapshotKey, shortShareUrl]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || shared?.scenario) return undefined;
-    const params = new URLSearchParams(window.location.search);
-    const slug = params.get("share");
-    if (!slug || !supabaseReady) return undefined;
-
-    let cancelled = false;
-    resolveShortShareLink(slug).then(({ data, error }) => {
-      if (cancelled) return;
-      if (error || !data?.payload) {
-        setCloudNotice(error?.message || "短網址讀取失敗。");
-        return;
-      }
-      transitionApply(data.payload, { markDirty: false });
-      setReadonlyShared(Boolean(data.readonly));
-      setCloudSyncStatus("idle");
-      setCloudNotice(`已載入短網址 ${slug}`);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [shared, supabaseReady]);
-
-  useEffect(() => {
     if (!scenarioInitializedRef.current) {
       scenarioInitializedRef.current = true;
       return;
@@ -1923,23 +2019,11 @@ export default function PersonalFinanceCashflowSimulator() {
     if (typeof window === "undefined") return undefined;
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
-        setIsSharePopoverOpen(false);
         setIsExportMenuOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return undefined;
-    const onPointerDown = (event) => {
-      if (sharePopoverRef.current && !sharePopoverRef.current.contains(event.target)) {
-        setIsSharePopoverOpen(false);
-      }
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
   }, []);
 
   useEffect(() => {
@@ -2016,40 +2100,13 @@ export default function PersonalFinanceCashflowSimulator() {
     supabase.auth.getSession().then(async ({ data, error }) => {
       if (cancelled || error || !data?.session || cloudHydratedRef.current) return;
       cloudHydratedRef.current = true;
-
-      const { data: cloudItems, error: cloudError } = await listCloudScenarios();
-      if (cancelled || cloudError || !Array.isArray(cloudItems) || cloudItems.length === 0) return;
-
-      const latestCloud = cloudItems[0];
-      const localUpdatedAt = new Date(scenario.meta.updatedAt || 0).getTime();
-      const cloudUpdatedAt = new Date(latestCloud.updated_at || 0).getTime();
-      if (!latestCloud.payload || !cloudUpdatedAt) return;
-
-      const shouldOfferLatestCloud = cloudSyncStatus === "idle" || cloudUpdatedAt > localUpdatedAt;
-      if (!shouldOfferLatestCloud) return;
-
-      const promptMessage =
-        cloudSyncStatus === "idle"
-          ? `已找到雲端版本「${latestCloud.name}」，是否直接載入？`
-          : `雲端有較新的版本「${latestCloud.name}」，是否載入這個版本？`;
-      const confirmed = window.confirm(promptMessage);
-      if (!confirmed) return;
-      transitionApply(latestCloud.payload, { markDirty: false });
-      setCloudScenarioId(latestCloud.id || "");
-      setCloudSyncStatus("synced");
-      setCloudNotice(`已載入雲端最新版「${latestCloud.name}」。`);
+      await refreshCloudBackup({ silent: true, applyPayload: false });
     });
 
     return () => {
       cancelled = true;
     };
-  }, [supabaseReady, scenario.meta.updatedAt, cloudSyncStatus]);
-
-  useEffect(() => {
-    if (cloudAuthState === "authenticated" && cloudScenarios.length === 0) {
-      refreshCloudScenarios({ silent: true });
-    }
-  }, [cloudAuthState]);
+  }, [supabaseReady]);
 
   const summary = useMemo(() => {
     const balances = rows.map((row) => row.balance);
@@ -2136,6 +2193,15 @@ export default function PersonalFinanceCashflowSimulator() {
     });
   };
 
+  const duplicateInstallment = (id) => {
+    setScenario((current) => {
+      const target = current.installments.find((item) => item.id === id);
+      if (!target) return current;
+      const duplicate = { ...target, id: makeId("installment"), name: `${target.name} 副本` };
+      return cloneScenario(current, { installments: [...current.installments, duplicate] });
+    });
+  };
+
   const importBulkInstallments = () => {
     if (bulkInstallmentErrors.length > 0 || bulkInstallmentPreview.length === 0) {
       return;
@@ -2181,7 +2247,7 @@ export default function PersonalFinanceCashflowSimulator() {
     const url = window.URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `cashflow-${scenario.meta.name}-${scenario.meta.baseMonth}.json`;
+    anchor.download = `${exportFileBase(scenario.meta.baseMonth)}.json`;
     anchor.click();
     window.URL.revokeObjectURL(url);
   };
@@ -2205,38 +2271,46 @@ export default function PersonalFinanceCashflowSimulator() {
     );
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "月度明細");
-    XLSX.writeFile(workbook, `cashflow-${scenario.meta.name}-${scenario.meta.baseMonth}.xlsx`);
+    XLSX.writeFile(workbook, `${exportFileBase(scenario.meta.baseMonth)}.xlsx`);
   };
 
   const exportPng = async () => {
     if (!reportRef.current) return;
     try {
+      setIsPreparingReportExport(true);
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
       if (document.fonts?.ready) {
         await document.fonts.ready;
       }
       const dataUrl = await toPng(reportRef.current, { pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff" });
       const anchor = document.createElement("a");
       anchor.href = dataUrl;
-      anchor.download = `cashflow-${scenario.meta.name}-${scenario.meta.baseMonth}.png`;
+      anchor.download = `${exportFileBase(scenario.meta.baseMonth)}.png`;
       anchor.click();
     } catch (error) {
-      window.alert("PNG 匯出失敗，請稍後再試。");
+      window.alert("圖片下載失敗，請稍後再試。");
+    } finally {
+      setIsPreparingReportExport(false);
     }
   };
 
   const exportChartPng = async (targetRef, fileSuffix) => {
     if (!targetRef?.current) return;
     try {
+      targetRef.current.classList.add("flowra-capture-export");
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
       if (document.fonts?.ready) {
         await document.fonts.ready;
       }
       const dataUrl = await toPng(targetRef.current, { pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff" });
       const anchor = document.createElement("a");
       anchor.href = dataUrl;
-      anchor.download = `cashflow-${scenario.meta.name}-${scenario.meta.baseMonth}-${fileSuffix}.png`;
+      anchor.download = `${exportFileBase(scenario.meta.baseMonth)}-${fileSuffix}.png`;
       anchor.click();
     } catch (error) {
-      window.alert("單張圖匯出失敗，請稍後再試。");
+      window.alert("圖表下載失敗，請稍後再試。");
+    } finally {
+      targetRef.current.classList.remove("flowra-capture-export");
     }
   };
 
@@ -2265,9 +2339,9 @@ export default function PersonalFinanceCashflowSimulator() {
       const x = (pageWidth - renderWidth) / 2;
       const y = margin;
       pdf.addImage(dataUrl, "PNG", x, y, renderWidth, renderHeight);
-      pdf.save(`cashflow-${scenario.meta.name}-${scenario.meta.baseMonth}.pdf`);
+      pdf.save(`${exportFileBase(scenario.meta.baseMonth)}.pdf`);
     } catch (error) {
-      window.alert("PDF 匯出失敗，請稍後再試。");
+      window.alert("報表下載失敗，請稍後再試。");
     } finally {
       setIsPreparingPdf(false);
     }
@@ -2291,71 +2365,15 @@ export default function PersonalFinanceCashflowSimulator() {
       }
       transitionApply(parsed);
     } catch (error) {
-      window.alert("JSON 匯入失敗，請確認檔案格式正確。");
+      window.alert("資料匯入失敗，請確認檔案格式正確。");
     }
     event.target.value = "";
-  };
-
-  const buildShare = async () => {
-    const next = standardShare;
-    if (next.length > 1800 && supabaseReady) {
-      setShareNotice("URL 已超過 1800 字，改用短網址模式建立。");
-      setShareTab("short");
-      await createShortShare();
-      return;
-    }
-    setShareNotice(next.length > 1800 ? "URL 已偏長；若設定 Supabase，建議改用短網址。" : "分享連結已更新，可直接複製。");
-    try {
-      await navigator.clipboard.writeText(next.url);
-    } catch (error) {
-      return;
-    }
-  };
-
-  const createShortShare = async () => {
-    if (!supabaseReady) {
-      setCloudNotice(getSupabaseConfigHint());
-      return;
-    }
-    if (cloudSetupState !== "ready") {
-      setCloudNotice(cloudSetupMessage);
-      return;
-    }
-
-    try {
-      const payload = toPersistedScenario(scenario);
-      const { data, error } = await createShortShareLink({ payload, readonly: shareReadonly });
-      if (error || !data?.slug) {
-        setCloudNotice(error?.message || "短網址建立失敗。");
-        return;
-      }
-
-      const url = new URL(window.location.href);
-      url.searchParams.delete("state");
-      url.searchParams.set("share", data.slug);
-      if (shareReadonly) {
-        url.searchParams.set("readonly", "1");
-      } else {
-        url.searchParams.delete("readonly");
-      }
-      const nextUrl = url.toString();
-      setShortShareUrl(nextUrl);
-      setShortShareSnapshotKey(currentShareSnapshotKey);
-      setCloudNotice(`短網址已建立，將於 ${new Date(data.expires_at).toLocaleDateString("zh-TW")} 到期。`);
-      try {
-        await navigator.clipboard.writeText(nextUrl);
-      } catch (error) {
-        return;
-      }
-    } catch (error) {
-      setCloudNotice(getErrorMessage(error, "短網址建立失敗。"));
-    }
   };
 
   const sendMagicLink = async () => {
     const email = authEmailInput.trim();
     if (!email) {
-      setCloudNotice("請先輸入登入 email。");
+      setCloudNotice("請先輸入登入信箱。");
       return;
     }
 
@@ -2369,9 +2387,9 @@ export default function PersonalFinanceCashflowSimulator() {
         return;
       }
 
-      setCloudNotice(`登入連結已寄到 ${email}，請在同一台裝置開啟信件完成登入。`);
+      setCloudNotice(`驗證信已寄到 ${email}，請在同一台裝置開啟信件完成登入。`);
     } catch (error) {
-      setCloudNotice(getErrorMessage(error, "登入連結寄送失敗。"));
+      setCloudNotice(getErrorMessage(error, "驗證信寄送失敗。"));
     } finally {
       setIsSendingMagicLink(false);
     }
@@ -2383,7 +2401,63 @@ export default function PersonalFinanceCashflowSimulator() {
       setCloudNotice(error.message || "登出失敗。");
       return;
     }
-    setCloudNotice("已登出 Supabase。");
+    setCloudNotice("已登出。");
+  };
+
+  const refreshCloudBackup = async (options = {}) => {
+    const { silent = false, applyPayload = false } = options;
+    if (cloudSetupState !== "ready") {
+      if (!silent) {
+        setCloudNotice(cloudSetupMessage);
+      }
+      return { data: null, error: new Error(cloudSetupMessage) };
+    }
+    if (cloudAuthState !== "authenticated") {
+      const error = new Error("請先登入，才能讀取雲端備份。");
+      if (!silent) {
+        setCloudNotice(error.message);
+      }
+      return { data: null, error };
+    }
+
+    setIsCloudBackupLoading(true);
+    try {
+      const { data, error } = await getLatestCloudBackup();
+      if (error) {
+        if (!silent) {
+          setCloudNotice(error.message);
+        }
+        return { data: null, error };
+      }
+
+      if (!data?.payload) {
+        setCloudBackupUpdatedAt("");
+        if (!silent) {
+          setCloudNotice("雲端目前沒有備份。");
+        }
+        return { data: null, error: null };
+      }
+
+      setCloudBackupUpdatedAt(data.updated_at || "");
+
+      if (applyPayload) {
+        transitionApply(data.payload, { markDirty: false });
+        setCloudSyncStatus("synced");
+        setCloudNotice("已從雲端還原最近備份。");
+      } else if (!silent) {
+        setCloudNotice(`已找到最近備份（${formatTimestamp(data.updated_at)}）。`);
+      }
+
+      return { data, error: null };
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error("讀取雲端備份失敗。");
+      if (!silent) {
+        setCloudNotice(normalizedError.message);
+      }
+      return { data: null, error: normalizedError };
+    } finally {
+      setIsCloudBackupLoading(false);
+    }
   };
 
   const syncScenarioToCloud = async (payloadOverride, options = {}) => {
@@ -2409,87 +2483,28 @@ export default function PersonalFinanceCashflowSimulator() {
     setCloudSyncStatus("syncing");
     try {
       const { data, error } = await withTimeout(
-        upsertCloudScenario({
-          id: cloudScenarioId || undefined,
-          name: safePayload.meta?.name || scenario.meta.name,
-          description: safePayload.meta?.description || scenario.meta.description,
-          baseMonth: safePayload.meta?.baseMonth || scenario.meta.baseMonth,
+        upsertCloudBackup({
           payload: safePayload,
         }),
         12000,
-        "同步雲端逾時，請確認網路或重新登入 Supabase 後再試。"
+        "同步雲端備份逾時，請確認網路後再試。"
       );
       if (error) {
         setCloudSyncStatus("pending");
         setCloudNotice(error.message);
         return { error };
       }
-      if (data?.id) {
-        setCloudScenarioId(data.id);
-      }
+      setCloudBackupUpdatedAt(data?.updated_at || new Date().toISOString());
       setCloudSyncStatus("synced");
       setSessionMeta(writeSessionMeta({ lastSyncedAt: new Date().toISOString(), lastSyncAttemptAt: attemptAt }));
-      setCloudNotice("目前內容已同步到 Supabase 雲端。");
-      refreshCloudScenarios({ silent: true });
+      setCloudNotice("目前內容已同步到雲端備份。");
       return { error: null };
     } catch (error) {
       setCloudSyncStatus("pending");
-      const normalizedError = error instanceof Error ? error : new Error("同步雲端失敗。");
+      const normalizedError = error instanceof Error ? error : new Error("同步雲端備份失敗。");
       setCloudNotice(normalizedError.message);
       return { error: normalizedError };
     }
-  };
-
-  const refreshCloudScenarios = async (options = {}) => {
-    const { silent = false } = options;
-    if (cloudSetupState !== "ready") {
-      if (!silent) {
-        setCloudNotice(cloudSetupMessage);
-      }
-      return;
-    }
-    if (cloudAuthState !== "authenticated") {
-      if (!silent) {
-        setCloudNotice("需先登入 Supabase，才能讀取雲端版本。");
-      }
-      return;
-    }
-    setIsCloudListLoading(true);
-    try {
-      const { data, error } = await listCloudScenarios();
-      if (error) {
-        if (!silent) {
-          setCloudNotice(error.message);
-        }
-        return;
-      }
-      const items = Array.isArray(data) ? data : [];
-      setCloudScenarios(items);
-      setSelectedCloudScenarioId((current) => current || items[0]?.id || "");
-      if (!silent) {
-        setCloudNotice(items.length ? `已讀取 ${items.length} 筆雲端版本。` : "雲端目前沒有版本。");
-      }
-    } catch (error) {
-      if (!silent) {
-        setCloudNotice(getErrorMessage(error, "讀取雲端版本失敗。"));
-      }
-    } finally {
-      setIsCloudListLoading(false);
-    }
-  };
-
-  const loadCloudScenario = () => {
-    const target = cloudScenarios.find((item) => item.id === selectedCloudScenarioId);
-    if (!target?.payload) return;
-    transitionApply(target.payload, { markDirty: false });
-    setCloudScenarioId(target.id || "");
-    setCloudSyncStatus("synced");
-    setCloudNotice(`已載入雲端版本「${target.name}」。`);
-  };
-
-  const restoreEditable = () => {
-    setReadonlyShared(false);
-    patchMeta({ name: `${scenario.meta.name}（我的版本）` });
   };
 
   const focusCompositionMonth = (monthKey) => {
@@ -2503,21 +2518,21 @@ export default function PersonalFinanceCashflowSimulator() {
   const inputGridClassName = "grid grid-cols-1 gap-3 sm:grid-cols-2";
   const cloudAuthMessage =
     cloudAuthState === "authenticated"
-      ? `已登入 Supabase${cloudUserEmail ? `（${cloudUserEmail}）` : ""}，可建立短網址與同步。`
+      ? `已登入帳號${cloudUserEmail ? `（${cloudUserEmail}）` : ""}，可同步備份與還原。`
       : cloudAuthState === "checking"
-        ? "正在檢查 Supabase 登入狀態。"
+        ? "正在檢查登入狀態。"
         : cloudAuthState === "anonymous"
-          ? "尚未登入 Supabase，請先寄送 magic link 完成登入。"
+          ? "尚未登入，請先寄送驗證信完成登入。"
           : getSupabaseConfigHint();
   const cloudSetupMessage =
     cloudSetupState === "ready"
-      ? "Supabase Flowra 雲端資料表已就緒。"
+      ? "雲端備份已就緒。"
       : cloudSetupState === "checking"
-        ? "正在檢查 Supabase Flowra 資料表。"
+        ? "正在檢查雲端備份狀態。"
         : cloudSetupState === "missing"
-          ? "Supabase 尚未建立 Flowra 雲端資料表，請先套用 supabase/migrations/20260505_flowra_cloud.sql。"
+          ? "雲端備份目前暫時不可用。"
           : cloudSetupState === "error"
-            ? "Supabase Flowra 雲端狀態檢查失敗。"
+            ? "雲端備份狀態檢查失敗。"
             : getSupabaseConfigHint();
   const cloudFeaturesEnabled = cloudAuthState === "authenticated" && cloudSetupState === "ready";
 
@@ -2539,48 +2554,69 @@ export default function PersonalFinanceCashflowSimulator() {
           }
         }
         .flowra-pdf-export .flowra-no-report-export,
-        .flowra-pdf-export .flowra-no-print {
+        .flowra-pdf-export .flowra-no-print,
+        .flowra-pdf-export .flowra-no-export,
+        .flowra-report-export .flowra-no-report-export,
+        .flowra-report-export .flowra-no-print,
+        .flowra-report-export .flowra-no-export,
+        .flowra-capture-export .flowra-no-print,
+        .flowra-capture-export .flowra-no-export {
           display: none !important;
         }
         .flowra-pdf-export .flowra-main-grid {
           grid-template-columns: 1fr !important;
         }
+        .flowra-report-export .flowra-main-grid {
+          grid-template-columns: 1fr !important;
+        }
         .flowra-hover-card:hover {
-          transform: translateY(-3px);
-          box-shadow: 0 18px 36px rgba(37,99,235,0.09);
-          border-color: rgba(191,219,254,0.95) !important;
+          border-color: #cbd5e1 !important;
         }
         .flowra-table-row:hover {
-          background: #f8fbff !important;
+          background: #f8fafc !important;
         }
         .flowra-table-row.is-active:hover {
-          background: #dbeafe !important;
+          background: #e2e8f0 !important;
         }
         .flowra-surface-row:hover {
-          border-color: #dbeafe !important;
-          background: #f8fbff !important;
+          border-color: #e2e8f0 !important;
+          background: #f8fafc !important;
+        }
+        .flowra-sortable-item:hover .flowra-drag-handle,
+        .flowra-sortable-item:focus-within .flowra-drag-handle {
+          opacity: 0.95;
+          color: #94a3b8;
         }
         .flowra-drag-handle:hover:not(.is-dragging) {
-          border-color: #93c5fd;
-          background: #eff6ff;
-          color: #1d4ed8;
+          opacity: 1 !important;
+          background: #f1f5f9;
+          color: #475569;
+          border-color: #e2e8f0 !important;
+        }
+        .flowra-drag-handle.is-dragging {
+          opacity: 1 !important;
+          background: #f1f5f9;
+          color: #334155;
+          border-color: #e2e8f0 !important;
+        }
+        @media (hover: none) {
+          .flowra-drag-handle {
+            opacity: 0.6 !important;
+          }
+        }
+        .flowra-drag-handle:focus-visible {
+          outline: 2px solid #94a3b8;
+          outline-offset: 2px;
         }
         .flowra-surface-enter {
-          animation: flowra-surface-enter 200ms ease both;
-          will-change: transform, opacity;
+          animation: flowra-surface-enter 160ms ease both;
         }
         @keyframes flowra-surface-enter {
-          from {
-            opacity: 0;
-            transform: translateY(4px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; }
+          to { opacity: 1; }
         }
       `}</style>
-      <div style={{ ...styles.container, ...styles.chartTheme }} className={`flowra-print-root${isPreparingPdf ? " flowra-pdf-export" : ""}`} ref={reportRef}>
+      <div style={{ ...styles.container, ...styles.chartTheme }} className={`flowra-print-root${isPreparingPdf ? " flowra-pdf-export" : ""}${isPreparingReportExport ? " flowra-report-export" : ""}`} ref={reportRef}>
         <div style={styles.header}>
           <div>
             <div style={styles.badge}>
@@ -2590,24 +2626,11 @@ export default function PersonalFinanceCashflowSimulator() {
             <p style={styles.subtitle}>
               用來試算未來幾個月的現金流與支出變化。
             </p>
-            <div style={{ ...styles.metaText, marginTop: "10px", fontWeight: 700, color: "#0f172a" }}>名稱：{scenario.meta.name}</div>
             <div style={{ ...styles.metaText, marginTop: "10px" }}>
               試算期間：{reportPeriodLabel}　|　產生時間：{generatedAtLabel}
             </div>
           </div>
         </div>
-
-        {readonlyShared ? (
-          <div style={{ ...styles.alert, background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1d4ed8" }}>
-            <div>
-              <strong>目前是唯讀分享模式</strong>
-              <div>你可以先檢視邏輯，再按「複製成自己的版本」開始編輯。</div>
-              <InteractiveButton onClick={restoreEditable} style={{ marginTop: "10px" }}>
-                複製成自己的版本
-              </InteractiveButton>
-            </div>
-          </div>
-        ) : null}
 
         <div style={styles.summaryGrid}>
           <StatCard label="期末現金" value={summary.finalBalance} hidden={hiddenAmounts} danger={summary.finalBalance < 0} />
@@ -2629,81 +2652,127 @@ export default function PersonalFinanceCashflowSimulator() {
           <div className="flowra-no-print flowra-no-report-export">
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
               <h2 style={styles.cardTitle}>基本設定</h2>
-              <div className={inputGridClassName}>
-                <BaseMonthPicker value={scenario.meta.baseMonth} onChange={(value) => patchMeta({ baseMonth: value })} disabled={readonlyShared} />
-                <Field label="目前台幣餘額" value={scenario.basics.startingTwd} onChange={(value) => patchBasics({ startingTwd: value })} suffix="元" disabled={readonlyShared} />
-                <Field label="日幣現金折台幣" value={scenario.basics.jpyCashTwd} onChange={(value) => patchBasics({ jpyCashTwd: value })} suffix="元" disabled={readonlyShared} />
-                <Field label="每月薪資" value={scenario.basics.monthlySalary} onChange={(value) => patchBasics({ monthlySalary: value })} suffix="元" disabled={readonlyShared} />
-                <MonthPicker label="薪資開始月份" value={scenario.basics.salaryStartsMonth} onChange={(value) => patchBasics({ salaryStartsMonth: value })} baseMonth={scenario.meta.baseMonth} horizon={scenario.basics.monthsToProject} disabled={readonlyShared} />
-                <Field label="每月租屋補貼" value={scenario.basics.monthlySubsidy} onChange={(value) => patchBasics({ monthlySubsidy: value })} suffix="元" disabled={readonlyShared} />
-                <MonthPicker label="補貼開始月份" value={scenario.basics.subsidyStartsMonth} onChange={(value) => patchBasics({ subsidyStartsMonth: value })} baseMonth={scenario.meta.baseMonth} horizon={scenario.basics.monthsToProject} disabled={readonlyShared} />
-                <Field label="每月房租" value={scenario.basics.monthlyRent} onChange={(value) => patchBasics({ monthlyRent: value })} suffix="元" disabled={readonlyShared} />
-                <Field label="每月生活費" value={scenario.basics.monthlyLivingCost} onChange={(value) => patchBasics({ monthlyLivingCost: value })} suffix="元" disabled={readonlyShared} />
-                <Field label="每月學貸" value={scenario.basics.monthlyStudentLoan} onChange={(value) => patchBasics({ monthlyStudentLoan: value })} suffix="元" disabled={readonlyShared} />
-                <Field label="試算月數" value={scenario.basics.monthsToProject} onChange={(value) => patchBasics({ monthsToProject: Math.max(0, Math.round(value)) })} suffix="月" min={0} step={1} disabled={readonlyShared} />
-              </div>
-              <div style={styles.mutedBox}>
-                <label style={styles.label}>是否把日幣現金納入可動用資金</label>
-                <InteractiveSelect
-                  value={scenario.basics.includeJpyCash ? "yes" : "no"}
-                  disabled={readonlyShared}
-                  onChange={(event) => patchBasics({ includeJpyCash: event.target.value === "yes" })}
-                >
-                  <option value="yes">納入</option>
-                  <option value="no">不納入</option>
-                </InteractiveSelect>
-              </div>
+
+              <SettingsGroup title="時間範圍" accent="#64748b">
+                <div className={inputGridClassName}>
+                  <BaseMonthPicker value={scenario.meta.baseMonth} onChange={(value) => patchMeta({ baseMonth: value })} disabled={readonlyShared} />
+                  <Field label="試算月數" value={scenario.basics.monthsToProject} onChange={(value) => patchBasics({ monthsToProject: Math.max(0, Math.round(value)) })} suffix="月" min={0} step={1} disabled={readonlyShared} />
+                </div>
+              </SettingsGroup>
+
+              <SettingsGroup title="可動用現金" accent="#d97706">
+                <div className={inputGridClassName}>
+                  <Field label="目前台幣餘額" value={scenario.basics.startingTwd} onChange={(value) => patchBasics({ startingTwd: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="日幣現金折台幣" value={scenario.basics.jpyCashTwd} onChange={(value) => patchBasics({ jpyCashTwd: value })} suffix="元" disabled={readonlyShared} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px", marginTop: "10px" }}>
+                  <span style={{ ...styles.label, margin: 0 }}>日幣現金納入可動用資金</span>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <InteractiveButton
+                      variant={scenario.basics.includeJpyCash ? "activePill" : "pillButton"}
+                      onClick={() => patchBasics({ includeJpyCash: true })}
+                      disabled={readonlyShared}
+                    >
+                      納入
+                    </InteractiveButton>
+                    <InteractiveButton
+                      variant={!scenario.basics.includeJpyCash ? "activePill" : "pillButton"}
+                      onClick={() => patchBasics({ includeJpyCash: false })}
+                      disabled={readonlyShared}
+                    >
+                      不納入
+                    </InteractiveButton>
+                  </div>
+                </div>
+              </SettingsGroup>
+
+              <SettingsGroup title="每月收入" accent="#16a34a">
+                <div className={inputGridClassName}>
+                  <Field label="每月薪資" value={scenario.basics.monthlySalary} onChange={(value) => patchBasics({ monthlySalary: value })} suffix="元" disabled={readonlyShared} />
+                  <MonthPicker label="薪資開始月份" value={scenario.basics.salaryStartsMonth} onChange={(value) => patchBasics({ salaryStartsMonth: value })} baseMonth={scenario.meta.baseMonth} horizon={scenario.basics.monthsToProject} disabled={readonlyShared} />
+                  <Field label="每月租屋補貼" value={scenario.basics.monthlySubsidy} onChange={(value) => patchBasics({ monthlySubsidy: value })} suffix="元" disabled={readonlyShared} />
+                  <MonthPicker label="補貼開始月份" value={scenario.basics.subsidyStartsMonth} onChange={(value) => patchBasics({ subsidyStartsMonth: value })} baseMonth={scenario.meta.baseMonth} horizon={scenario.basics.monthsToProject} disabled={readonlyShared} />
+                </div>
+              </SettingsGroup>
+
+              <SettingsGroup title="每月固定支出" accent="#dc2626" last>
+                <div className={inputGridClassName}>
+                  <Field label="每月房租" value={scenario.basics.monthlyRent} onChange={(value) => patchBasics({ monthlyRent: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="每月生活費" value={scenario.basics.monthlyLivingCost} onChange={(value) => patchBasics({ monthlyLivingCost: value })} suffix="元" disabled={readonlyShared} />
+                  <Field label="每月學貸" value={scenario.basics.monthlyStudentLoan} onChange={(value) => patchBasics({ monthlyStudentLoan: value })} suffix="元" disabled={readonlyShared} />
+                </div>
+              </SettingsGroup>
             </InteractiveSurface>
 
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <InteractiveSurface
-                style={{ ...styles.surfaceRow, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: isOneTimeOpen ? "12px" : 0 }}
-                hoverClassName="flowra-surface-row"
-              >
-                <InteractiveButton
-                  variant="button"
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
+                <button
+                  type="button"
                   onClick={() => setIsOneTimeOpen((value) => !value)}
-                  style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }}
                   aria-expanded={isOneTimeOpen}
+                  style={sectionToggleStyle}
                 >
+                  <Chevron open={isOneTimeOpen} />
                   <span>一次性收入 / 支出</span>
-                  <span>{isOneTimeOpen ? "收起 ▲" : `展開 ▼（${scenario.oneTimeItems.length} 筆）`}</span>
+                  <CountPill count={scenario.oneTimeItems.length} />
+                </button>
+                <InteractiveButton variant="smallButton" onClick={addOneTimeItem} disabled={readonlyShared}>
+                  + 新增
                 </InteractiveButton>
-                <InteractiveButton onClick={addOneTimeItem} disabled={readonlyShared}>
-                  新增
-                </InteractiveButton>
-              </InteractiveSurface>
-              {isOneTimeOpen
-                ? (
+              </div>
+              <Collapsible open={isOneTimeOpen}>
+                {scenario.oneTimeItems.length === 0
+                  ? (
+                    <div style={{ ...styles.mutedBox, marginTop: 0, textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+                      尚未新增任何一次性收支，按右上「+ 新增」開始。
+                    </div>
+                  )
+                  : (
                   <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleOneTimeDragEnd}>
                     <SortableContext items={scenario.oneTimeItems.map((item) => item.id)} strategy={verticalListSortingStrategy}>
                       {scenario.oneTimeItems.map((item) => {
                         const itemIsOpen = Boolean(openOneTimeItemIds[item.id]);
+                        const isIncome = item.type === "income";
+                        const accent = isIncome ? "#16a34a" : "#dc2626";
+                        const categoryMeta = CATEGORY_META[item.category] || CATEGORY_META.other;
+                        const chipColor = isIncome ? "#15803d" : categoryMeta.color;
                         return (
                           <SortableItemShell key={item.id} id={item.id}>
-                            <div style={styles.item}>
-                              <InteractiveSurface
-                                style={{ ...styles.surfaceRow, display: "flex", gap: "8px", alignItems: "center" }}
-                                hoverClassName="flowra-surface-row"
-                              >
-                                <InteractiveButton
-                                  variant="button"
+                            <div style={{ ...styles.item, borderLeft: `4px solid ${accent}`, padding: "10px 12px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <button
+                                  type="button"
                                   onClick={() => setOpenOneTimeItemIds((current) => ({ ...current, [item.id]: !current[item.id] }))}
-                                  style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left", padding: "8px 10px" }}
                                   aria-expanded={itemIsOpen}
+                                  style={itemToggleStyle}
                                 >
-                                  <span>{item.name}</span>
-                                  <span style={{ color: "#64748b", fontSize: "12px" }}>{itemIsOpen ? "▲" : "▼"}</span>
-                                </InteractiveButton>
-                                <InteractiveButton onClick={() => duplicateOneTimeItem(item.id)} disabled={readonlyShared}>
-                                  複製
-                                </InteractiveButton>
-                                <InteractiveButton variant="dangerButton" onClick={() => removeOneTimeItem(item.id)} disabled={readonlyShared}>
-                                  刪
-                                </InteractiveButton>
-                              </InteractiveSurface>
-                              {itemIsOpen ? (
-                                <div style={{ marginTop: "10px" }}>
+                                  <Chevron open={itemIsOpen} />
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0, flex: 1 }}>
+                                    <span style={{ fontWeight: 800, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                                    <span style={{ fontSize: "12px", color: "#475569", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                      <span style={{ fontWeight: 800, color: accent }}>
+                                        {isIncome ? "+" : "−"}{maskCurrency(item.amount, hiddenAmounts)}
+                                      </span>
+                                      <span style={{ color: "#cbd5e1" }}>·</span>
+                                      <span>{formatMonthLabel(item.month, true)}</span>
+                                      <span style={{ color: "#cbd5e1" }}>·</span>
+                                      <span style={{ ...styles.chip, padding: "1px 8px", fontSize: "11px", color: chipColor, borderColor: `${chipColor}33`, background: `${chipColor}10` }}>
+                                        {isIncome ? "收入" : categoryMeta.label}
+                                      </span>
+                                    </span>
+                                  </div>
+                                </button>
+                                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                                  <InteractiveButton variant="tinyButton" onClick={() => duplicateOneTimeItem(item.id)} disabled={readonlyShared}>
+                                    複製
+                                  </InteractiveButton>
+                                  <InteractiveButton variant="dangerButton" style={{ padding: "5px 10px", borderRadius: "999px" }} onClick={() => removeOneTimeItem(item.id)} disabled={readonlyShared}>
+                                    刪
+                                  </InteractiveButton>
+                                </div>
+                              </div>
+                              <Collapsible open={itemIsOpen}>
+                                <div style={{ paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}>
                                   <TextField label="項目名稱" value={item.name} onChange={(value) => updateOneTimeItem(item.id, { name: value })} disabled={readonlyShared} />
                                   <div className={`${inputGridClassName} mt-2.5`}>
                                     <Field label="金額" value={item.amount} onChange={(value) => updateOneTimeItem(item.id, { amount: value })} step={1000} disabled={readonlyShared} />
@@ -2714,7 +2783,6 @@ export default function PersonalFinanceCashflowSimulator() {
                                       baseMonth={scenario.meta.baseMonth}
                                       horizon={scenario.basics.monthsToProject}
                                       disabled={readonlyShared}
-                                      showRelative
                                     />
                                     <div>
                                       <label style={styles.label}>類型</label>
@@ -2735,66 +2803,86 @@ export default function PersonalFinanceCashflowSimulator() {
                                     </div>
                                   </div>
                                 </div>
-                              ) : null}
+                              </Collapsible>
                             </div>
                           </SortableItemShell>
                         );
                       })}
                     </SortableContext>
                   </DndContext>
-                )
-                : null}
+                )}
+              </Collapsible>
             </InteractiveSurface>
 
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <InteractiveSurface
-                style={{ ...styles.surfaceRow, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: isInstallmentsOpen ? "12px" : 0 }}
-                hoverClassName="flowra-surface-row"
-              >
-                <InteractiveButton
-                  variant="button"
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
+                <button
+                  type="button"
                   onClick={() => setIsInstallmentsOpen((value) => !value)}
-                  style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }}
                   aria-expanded={isInstallmentsOpen}
+                  style={sectionToggleStyle}
                 >
+                  <Chevron open={isInstallmentsOpen} />
                   <span>分期帳單</span>
-                  <span>{isInstallmentsOpen ? "收起 ▲" : `展開 ▼（${installmentRows.length} 筆）`}</span>
-                </InteractiveButton>
-                <InteractiveButton onClick={() => setIsBulkImportOpen((value) => !value)} disabled={readonlyShared}>
-                  批次匯入
-                </InteractiveButton>
-                <InteractiveButton onClick={addInstallment} disabled={readonlyShared}>
-                  新增
-                </InteractiveButton>
-              </InteractiveSurface>
-              {isInstallmentsOpen
-                ? (
+                  <CountPill count={installmentRows.length} />
+                </button>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  <InteractiveButton variant="smallButton" onClick={() => setIsBulkImportOpen((value) => !value)} disabled={readonlyShared}>
+                    批次匯入
+                  </InteractiveButton>
+                  <InteractiveButton variant="smallButton" onClick={addInstallment} disabled={readonlyShared}>
+                    + 新增
+                  </InteractiveButton>
+                </div>
+              </div>
+              <Collapsible open={isInstallmentsOpen}>
+                {installmentRows.length === 0
+                  ? (
+                    <div style={{ ...styles.mutedBox, marginTop: 0, textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+                      尚未新增分期帳單，可按「+ 新增」或「批次匯入」開始。
+                    </div>
+                  )
+                  : (
                   <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleInstallmentDragEnd}>
                     <SortableContext items={installmentRows.map((item) => item.id)} strategy={verticalListSortingStrategy}>
                       {installmentRows.map((item) => {
                         const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
+                        const endMonth = addMonths(item.startMonth, item.terms - 1);
                         return (
                           <SortableItemShell key={item.id} id={item.id}>
-                            <div style={styles.item}>
-                              <InteractiveSurface
-                                style={{ ...styles.surfaceRow, display: "flex", gap: "8px", alignItems: "center" }}
-                                hoverClassName="flowra-surface-row"
-                              >
-                                <InteractiveButton
-                                  variant="button"
+                            <div style={{ ...styles.item, borderLeft: "4px solid #0284c7", padding: "10px 12px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <button
+                                  type="button"
                                   onClick={() => setOpenInstallmentItemIds((current) => ({ ...current, [item.id]: !current[item.id] }))}
-                                  style={{ flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left", padding: "8px 10px" }}
                                   aria-expanded={itemIsOpen}
+                                  style={itemToggleStyle}
                                 >
-                                  <span>{item.name}</span>
-                                  <span style={{ color: "#64748b", fontSize: "12px" }}>{itemIsOpen ? "▲" : "▼"}</span>
-                                </InteractiveButton>
-                                <InteractiveButton variant="dangerButton" onClick={() => removeInstallment(item.id)} disabled={readonlyShared}>
-                                  刪
-                                </InteractiveButton>
-                              </InteractiveSurface>
-                              {itemIsOpen ? (
-                                <div style={{ marginTop: "10px" }}>
+                                  <Chevron open={itemIsOpen} />
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0, flex: 1 }}>
+                                    <span style={{ fontWeight: 800, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                                    <span style={{ fontSize: "12px", color: "#475569", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                                      <span style={{ fontWeight: 800, color: "#0284c7" }}>
+                                        月付 {maskCurrency(item.payment, hiddenAmounts)}
+                                      </span>
+                                      <span style={{ color: "#cbd5e1" }}>·</span>
+                                      <span>{item.terms} 期</span>
+                                      <span style={{ color: "#cbd5e1" }}>·</span>
+                                      <span>{formatMonthLabel(item.startMonth, true)} → {formatMonthLabel(endMonth, true)}</span>
+                                    </span>
+                                  </div>
+                                </button>
+                                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                                  <InteractiveButton variant="tinyButton" onClick={() => duplicateInstallment(item.id)} disabled={readonlyShared}>
+                                    複製
+                                  </InteractiveButton>
+                                  <InteractiveButton variant="dangerButton" style={{ padding: "5px 10px", borderRadius: "999px" }} onClick={() => removeInstallment(item.id)} disabled={readonlyShared}>
+                                    刪
+                                  </InteractiveButton>
+                                </div>
+                              </div>
+                              <Collapsible open={itemIsOpen}>
+                                <div style={{ paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}>
                                   <TextField label="項目名稱" value={item.name} onChange={(value) => updateInstallment(item.id, { name: value })} disabled={readonlyShared} />
                                   <div className={`${inputGridClassName} mt-2.5`}>
                                     <Field label="本金" value={item.principal} onChange={(value) => updateInstallment(item.id, { principal: value })} disabled={readonlyShared} />
@@ -2807,7 +2895,6 @@ export default function PersonalFinanceCashflowSimulator() {
                                       baseMonth={scenario.meta.baseMonth}
                                       horizon={scenario.basics.monthsToProject}
                                       disabled={readonlyShared}
-                                      showRelative
                                     />
                                   </div>
                                   <div style={{ ...styles.mutedBox, ...styles.miniGrid }}>
@@ -2825,96 +2912,28 @@ export default function PersonalFinanceCashflowSimulator() {
                                     </div>
                                   </div>
                                 </div>
-                              ) : null}
+                              </Collapsible>
                             </div>
                           </SortableItemShell>
                         );
                       })}
                     </SortableContext>
                   </DndContext>
-                )
-                : null}
+                )}
+              </Collapsible>
             </InteractiveSurface>
 
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <h2 style={styles.cardTitle}>匯入 / 分享 / 匯出</h2>
+              <h2 style={styles.cardTitle}>匯入 / 備份 / 匯出</h2>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}>
-                <div style={{ position: "relative" }} ref={sharePopoverRef}>
-                  <InteractiveButton onClick={() => setIsSharePopoverOpen((value) => !value)} aria-expanded={isSharePopoverOpen}>
-                    分享
-                  </InteractiveButton>
-                  {isSharePopoverOpen ? (
-                    <FloatingSurface style={styles.sharePopover} motionClassName="flowra-surface-enter">
-                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-                        <InteractiveButton variant={shareTab === "url" ? "activePill" : "pillButton"} onClick={() => setShareTab("url")}>
-                          複製連結
-                        </InteractiveButton>
-                        <InteractiveButton variant={shareTab === "short" ? "activePill" : "pillButton"} onClick={() => setShareTab("short")}>
-                          短網址
-                        </InteractiveButton>
-                      </div>
-                      <div style={styles.exportGrid}>
-                        {shareTab === "url" ? (
-                          <>
-                            <InteractiveButton onClick={buildShare}>
-                              複製分享連結
-                            </InteractiveButton>
-                          </>
-                        ) : (
-                          <>
-                            <InteractiveButton onClick={createShortShare} disabled={!cloudFeaturesEnabled}>
-                              建立短網址
-                            </InteractiveButton>
-                            <div style={{ ...styles.mutedBox, gridColumn: "1 / -1", marginTop: 0 }}>
-                              <div style={styles.metaText}>
-                                {supabaseReady ? `${cloudAuthMessage} ${cloudSetupMessage} 短網址預設 30 天過期並記錄 view_count。` : getSupabaseConfigHint()}
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                      <div style={{ ...styles.mutedBox, marginTop: "12px" }}>
-                        <label style={{ ...styles.label, marginBottom: "8px" }}>分享為唯讀</label>
-                        <InteractiveSelect value={shareReadonly ? "yes" : "no"} onChange={(event) => setShareReadonly(event.target.value === "yes")}>
-                          <option value="yes">唯讀分享</option>
-                          <option value="no">可編輯分享</option>
-                        </InteractiveSelect>
-                      </div>
-                      <div style={{ ...styles.mutedBox, marginTop: "12px" }}>
-                        <div style={styles.label}>分享連結</div>
-                        <div style={{ wordBreak: "break-all", fontSize: "13px", color: "#334155" }}>
-                          {shareTab === "url" ? shareUrl || "尚未產生" : shortShareUrl || "尚未產生短網址"}
-                        </div>
-                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#64748b" }}>
-                          {shareTab === "url"
-                            ? shareNotice || "警語：連結內含你的金額資訊，僅分享給信任對象。"
-                            : cloudNotice || "需登入、產生 slug、設定 30 天過期與 view_count。"}
-                        </div>
-                        <div style={{ marginTop: "6px", fontSize: "12px", color: "#64748b" }}>
-                          {cloudNotice && shareTab === "url" ? cloudNotice : null}
-                        </div>
-                      </div>
-                      <div style={{ ...styles.mutedBox, marginTop: "12px" }}>
-                        <div style={styles.label}>QR code</div>
-                        {shareQrUrl ? (
-                          <div style={{ display: "flex", gap: "14px", alignItems: "center", flexWrap: "wrap" }}>
-                            <img src={shareQrUrl} alt="分享連結 QR code" style={{ width: "148px", height: "148px", borderRadius: "16px", border: "1px solid #dbe4ee", background: "white", padding: "8px" }} />
-                            <div style={{ ...styles.metaText, maxWidth: "220px" }}>
-                              {shareTab === "url" ? "即時分享用 QR code，可搭配唯讀分享。" : "短網址建立成功後，這裡會顯示可掃描的 QR code。"}
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={styles.metaText}>先產生分享連結後，這裡才會顯示 QR code。</div>
-                        )}
-                      </div>
-                    </FloatingSurface>
-                  ) : null}
-                </div>
                 <InteractiveButton onClick={() => syncScenarioToCloud()} disabled={!cloudFeaturesEnabled}>
-                  同步雲端
+                  同步備份
+                </InteractiveButton>
+                <InteractiveButton onClick={() => refreshCloudBackup({ applyPayload: true })} disabled={!cloudFeaturesEnabled || isCloudBackupLoading}>
+                  {isCloudBackupLoading ? "還原中..." : "還原最近備份"}
                 </InteractiveButton>
                 <InteractiveButton onClick={() => fileInputRef.current?.click()}>
-                  匯入 JSON
+                  匯入資料
                 </InteractiveButton>
                 <div style={{ position: "relative" }}>
                   <InteractiveButton onClick={() => setIsExportMenuOpen((value) => !value)} aria-expanded={isExportMenuOpen}>
@@ -2923,16 +2942,16 @@ export default function PersonalFinanceCashflowSimulator() {
                   {isExportMenuOpen ? (
                     <FloatingSurface style={styles.dropdownMenu} motionClassName="flowra-surface-enter">
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); exportPng(); }}>
-                        截圖（PNG，整頁）
+                        下載整頁圖片
                       </InteractiveButton>
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); exportPdf(); }}>
-                        PDF 報表
+                        下載報表
                       </InteractiveButton>
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); exportExcel(); }}>
-                        Excel 明細
+                        下載表格檔
                       </InteractiveButton>
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); exportJson(); }}>
-                        JSON 完整狀態
+                        下載完整資料
                       </InteractiveButton>
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); printReport(); }}>
                         列印
@@ -2944,58 +2963,68 @@ export default function PersonalFinanceCashflowSimulator() {
               <input ref={fileInputRef} type="file" accept="application/json" onChange={importJson} style={{ display: "none" }} />
               <div style={{ ...styles.mutedBox, marginTop: "12px" }}>
                 <div style={{ ...styles.metaText, marginTop: "6px" }}>
-                  雲端同步狀態：
+                  雲端備份狀態：
                   {cloudSyncStatus === "syncing" ? "同步中" : null}
                   {cloudSyncStatus === "pending" ? "內容已變更，尚未重新同步" : null}
-                  {cloudSyncStatus === "synced" ? "已同步" : null}
-                  {cloudSyncStatus === "idle" ? "尚未同步" : null}
+                  {cloudSyncStatus === "synced" ? "已同步備份" : null}
+                  {cloudSyncStatus === "idle" ? "尚未同步備份" : null}
                 </div>
+                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近雲端備份：{formatTimestamp(cloudBackupUpdatedAt)}</div>
                 <div style={{ ...styles.metaText, marginTop: "6px" }}>最近開啟：{lastOpenedAtLabel}</div>
                 <div style={{ ...styles.metaText, marginTop: "6px" }}>最近嘗試同步：{lastSyncAttemptAtLabel}</div>
-                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近同步：{lastSyncedAtLabel}</div>
+                <div style={{ ...styles.metaText, marginTop: "6px" }}>最近同步備份：{lastSyncedAtLabel}</div>
                 <div style={{ ...styles.metaText, marginTop: "6px" }}>{cloudAuthMessage}</div>
                 <div style={{ ...styles.metaText, marginTop: "6px" }}>{cloudSetupMessage}</div>
-                <div style={{ ...styles.mutedBox, marginTop: "10px", background: "#ffffff" }}>
-                  <div style={styles.label}>Supabase 登入</div>
-                  {cloudAuthState === "authenticated" ? (
-                    <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                      <div style={styles.metaText}>目前 session 已就緒，可直接做短網址與雲端同步。</div>
-                      <InteractiveButton onClick={signOutFromSupabase}>
+                {cloudNotice ? (
+                  <div style={{ ...styles.metaText, marginTop: "6px" }}>{cloudNotice}</div>
+                ) : null}
+                <div style={{ marginTop: "12px", padding: "14px", borderRadius: "14px", border: "1px solid #e2e8f0", background: "#ffffff" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flex: 1 }}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#94a3b8", flexShrink: 0 }} aria-hidden="true">
+                        <circle cx="8" cy="6" r="2.6" />
+                        <path d="M2.5 13.5 C3.5 10.8 5.6 9.6 8 9.6 C10.4 9.6 12.5 10.8 13.5 13.5" />
+                      </svg>
+                      <span style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a", flexShrink: 0 }}>帳號</span>
+                      <span style={{ fontSize: "12px", color: cloudAuthState === "authenticated" ? "#475569" : "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                        {cloudAuthState === "authenticated"
+                          ? (cloudUserEmail || "已登入")
+                          : cloudAuthState === "checking"
+                            ? "確認中…"
+                            : "尚未登入"}
+                      </span>
+                    </div>
+                    {cloudAuthState === "authenticated" ? (
+                      <InteractiveButton variant="smallButton" onClick={signOutFromSupabase} style={{ flexShrink: 0 }}>
                         登出
                       </InteractiveButton>
-                    </div>
+                    ) : null}
+                  </div>
+                  {cloudAuthState === "authenticated" ? (
+                    <div style={{ ...styles.metaText, fontSize: "12px", margin: 0 }}>已連線，可直接同步備份或還原最近備份。</div>
                   ) : (
                     <>
-                      <div style={{ ...styles.metaText, marginBottom: "8px" }}>輸入 email 後寄送 magic link；完成登入後此頁會自動接收 session。</div>
-                      <div className={inputGridClassName}>
-                        <TextField label="登入 email" value={authEmailInput} onChange={setAuthEmailInput} disabled={!supabaseReady || isSendingMagicLink} type="email" />
-                        <div style={{ display: "flex", alignItems: "end" }}>
-                          <InteractiveButton onClick={sendMagicLink} style={{ width: "100%", justifyContent: "center" }} disabled={!supabaseReady || isSendingMagicLink}>
-                            {isSendingMagicLink ? "寄送中..." : "寄送登入連結"}
-                          </InteractiveButton>
+                      <div style={{ ...styles.metaText, fontSize: "12px", margin: "0 0 8px" }}>輸入信箱寄送驗證信；完成登入後此頁會自動更新狀態。</div>
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "stretch" }}>
+                        <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                          <InteractiveInput
+                            type="email"
+                            placeholder="email@example.com"
+                            value={authEmailInput}
+                            disabled={!supabaseReady || isSendingMagicLink}
+                            onChange={(event) => setAuthEmailInput(event.target.value)}
+                          />
                         </div>
+                        <InteractiveButton
+                          onClick={sendMagicLink}
+                          disabled={!supabaseReady || isSendingMagicLink || !authEmailInput.trim()}
+                          style={{ flexShrink: 0 }}
+                        >
+                          {isSendingMagicLink ? "寄送中…" : "寄送驗證信"}
+                        </InteractiveButton>
                       </div>
                     </>
                   )}
-                </div>
-                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" }}>
-                  <InteractiveButton onClick={() => refreshCloudScenarios()} disabled={!cloudFeaturesEnabled || isCloudListLoading}>
-                    {isCloudListLoading ? "讀取中..." : "讀取雲端版本"}
-                  </InteractiveButton>
-                  {cloudScenarios.length ? (
-                    <>
-                      <InteractiveSelect value={selectedCloudScenarioId} onChange={(event) => setSelectedCloudScenarioId(event.target.value)} style={{ minWidth: "220px", maxWidth: "100%" }}>
-                        {cloudScenarios.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}｜{formatTimestamp(item.updated_at)}
-                          </option>
-                        ))}
-                      </InteractiveSelect>
-                      <InteractiveButton onClick={loadCloudScenario}>
-                        載入選中版本
-                      </InteractiveButton>
-                    </>
-                  ) : null}
                 </div>
               </div>
             </InteractiveSurface>
@@ -3006,8 +3035,15 @@ export default function PersonalFinanceCashflowSimulator() {
             <InteractiveSurface as="section" style={{ ...styles.card, position: "relative" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={trendChartRef}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
                 <h2 style={styles.cardTitle}>月底現金趨勢</h2>
-                <InteractiveButton onClick={() => exportChartPng(trendChartRef, "cash-trend")} className="flowra-no-print">
-                  PNG
+                <InteractiveButton
+                  variant="smallButton"
+                  onClick={() => exportChartPng(trendChartRef, "cash-trend")}
+                  className="flowra-no-print"
+                  style={{ padding: "8px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  title="下載圖片"
+                  aria-label="下載圖片"
+                >
+                  <DownloadIcon />
                 </InteractiveButton>
               </div>
               <CashTrendChart
@@ -3021,8 +3057,15 @@ export default function PersonalFinanceCashflowSimulator() {
             <InteractiveSurface as="section" style={{ ...styles.card, position: "relative" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={incomeChartRef}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
                 <h2 style={styles.cardTitle}>每月收入與支出</h2>
-                <InteractiveButton onClick={() => exportChartPng(incomeChartRef, "income-expense")} className="flowra-no-print">
-                  PNG
+                <InteractiveButton
+                  variant="smallButton"
+                  onClick={() => exportChartPng(incomeChartRef, "income-expense")}
+                  className="flowra-no-print"
+                  style={{ padding: "8px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  title="下載圖片"
+                  aria-label="下載圖片"
+                >
+                  <DownloadIcon />
                 </InteractiveButton>
               </div>
               <IncomeExpenseChart rows={rows} onSelectMonth={focusCompositionMonth} selectedMonthKey={selectedMonthKey} />
@@ -3031,8 +3074,15 @@ export default function PersonalFinanceCashflowSimulator() {
             <InteractiveSurface as="section" style={{ ...styles.card, position: "relative" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={compositionChartRef}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
                 <h2 style={styles.cardTitle}>支出組成堆疊面積圖</h2>
-                <InteractiveButton onClick={() => exportChartPng(compositionChartRef, "expense-composition")} className="flowra-no-print">
-                  PNG
+                <InteractiveButton
+                  variant="smallButton"
+                  onClick={() => exportChartPng(compositionChartRef, "expense-composition")}
+                  className="flowra-no-print"
+                  style={{ padding: "8px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  title="下載圖片"
+                  aria-label="下載圖片"
+                >
+                  <DownloadIcon />
                 </InteractiveButton>
               </div>
               <ExpenseCompositionChart
@@ -3046,12 +3096,25 @@ export default function PersonalFinanceCashflowSimulator() {
               />
             </InteractiveSurface>
 
-            <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card" className="flowra-print-card">
-              <h2 style={styles.cardTitle}>月度明細</h2>
-              <MonthDetailTable rows={rows} selectedMonthKey={selectedMonthKey} hidden={hiddenAmounts} mobile={mobile} monthRefs={monthRefs} readonly={readonlyShared} />
-            </InteractiveSurface>
           </div>
         </div>
+
+        <InteractiveSurface as="section" style={{ ...styles.card, position: "relative", marginTop: "20px" }} hoverClassName="flowra-hover-card" className="flowra-print-card" ref={monthDetailRef}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "8px" }}>
+            <h2 style={{ ...styles.cardTitle, margin: 0 }}>月度明細</h2>
+            <InteractiveButton
+              variant="smallButton"
+              onClick={() => exportChartPng(monthDetailRef, "month-detail")}
+              className="flowra-no-print"
+              style={{ padding: "8px", borderRadius: "10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+              title="下載圖片"
+              aria-label="下載圖片"
+            >
+              <DownloadIcon />
+            </InteractiveButton>
+          </div>
+          <MonthDetailTable rows={rows} selectedMonthKey={selectedMonthKey} hidden={hiddenAmounts} mobile={mobile} monthRefs={monthRefs} readonly={readonlyShared} />
+        </InteractiveSurface>
         {isBulkImportOpen ? (
           <div style={styles.modalBackdrop} className="flowra-no-print" onClick={() => setIsBulkImportOpen(false)}>
             <FloatingSurface style={styles.modalCard} motionClassName="flowra-surface-enter" onClick={(event) => event.stopPropagation()}>
