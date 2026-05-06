@@ -2332,6 +2332,7 @@ export default function PersonalFinanceCashflowSimulator() {
     if (
       typeof window === "undefined" ||
       !supabaseReady ||
+      cloudAuthState !== "authenticated" ||
       !hydrationInitializedRef.current ||
       hasLocalDraftRef.current ||
       cloudHydratedRef.current
@@ -2362,7 +2363,7 @@ export default function PersonalFinanceCashflowSimulator() {
     return () => {
       cancelled = true;
     };
-  }, [supabaseReady]);
+  }, [cloudAuthState, supabaseReady]);
 
   const summary = useMemo(() => {
     const balances = rows.map((row) => row.balance);
