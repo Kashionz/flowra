@@ -18,13 +18,13 @@ export const CHART_COLORS = {
 };
 
 export const CHART_THEME_VARS = {
-  "--chart-balance": "#2563eb",
+  "--chart-balance": "#0284c7",
   "--chart-income": "#16a34a",
   "--chart-expense": "#f97316",
   "--chart-danger": "#dc2626",
   "--chart-reserve": "#16a34a",
-  "--chart-fixed": "#2563eb",
-  "--chart-variable": "#14b8a6",
+  "--chart-fixed": "#0284c7",
+  "--chart-variable": "#64748b",
   "--chart-one-time": "#f59e0b",
 };
 
