@@ -2171,6 +2171,7 @@ export default function PersonalFinanceCashflowSimulator() {
   const fileInputRef = useRef(null);
   const cloudHydratedRef = useRef(false);
   const hasLocalDraftRef = useRef(false);
+  const hasPendingCloudSyncRef = useRef(false);
   const hydrationInitializedRef = useRef(false);
   const scenarioInitializedRef = useRef(false);
   const skipNextScenarioDirtyRef = useRef(false);
@@ -2211,6 +2212,7 @@ export default function PersonalFinanceCashflowSimulator() {
       const pendingCloudSync = readPendingCloudSync(window.localStorage);
 
       hasLocalDraftRef.current = Boolean(localDraft);
+      hasPendingCloudSyncRef.current = Boolean(pendingCloudSync);
 
       if (localDraft) {
         transitionApply(localDraft, { markDirty: false });
@@ -2333,6 +2335,7 @@ export default function PersonalFinanceCashflowSimulator() {
       typeof window === "undefined" ||
       !supabaseReady ||
       cloudAuthState !== "authenticated" ||
+      cloudSetupState !== "ready" ||
       !hydrationInitializedRef.current ||
       hasLocalDraftRef.current ||
       cloudHydratedRef.current
@@ -2345,9 +2348,9 @@ export default function PersonalFinanceCashflowSimulator() {
     let cancelled = false;
     supabase.auth.getSession().then(async ({ data, error }) => {
       if (cancelled || error || !data?.session || cloudHydratedRef.current) return;
-      cloudHydratedRef.current = true;
       const { data: cloudBackup } = await refreshCloudBackup({ silent: true, applyPayload: false });
       if (cancelled) return;
+      cloudHydratedRef.current = true;
 
       const hydration = resolveHydrationSource({
         localDraft: null,
@@ -2356,14 +2359,16 @@ export default function PersonalFinanceCashflowSimulator() {
 
       if (hydration.source === "cloud" && hydration.payload) {
         transitionApply(hydration.payload, { markDirty: false });
-        setCloudSyncStatus("synced");
+        if (!hasPendingCloudSyncRef.current) {
+          setCloudSyncStatus("synced");
+        }
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [cloudAuthState, supabaseReady]);
+  }, [cloudAuthState, cloudSetupState, supabaseReady]);
 
   const summary = useMemo(() => {
     const balances = rows.map((row) => row.balance);
