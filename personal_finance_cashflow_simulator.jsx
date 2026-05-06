@@ -10,7 +10,13 @@ import { CHART_COLORS, CHART_THEME_VARS, ChartSurface, ChartTooltip, ChartToolti
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
-import { readDraftScenario, readPendingCloudSync, resolveHydrationSource } from "./lib/scenarioPersistence.js";
+import {
+  readDraftScenario,
+  readPendingCloudSync,
+  resolveHydrationSource,
+  writeDraftScenario,
+  writePendingCloudSync,
+} from "./lib/scenarioPersistence.js";
 import {
   checkFlowraCloudSetup,
   createFlowraSupabaseClient,
@@ -2245,6 +2251,14 @@ export default function PersonalFinanceCashflowSimulator() {
     if (skipNextScenarioDirtyRef.current) {
       skipNextScenarioDirtyRef.current = false;
       return;
+    }
+    if (typeof window !== "undefined" && window.localStorage) {
+      const persisted = toPersistedScenario(scenario);
+      const updatedAt = new Date().toISOString();
+      writeDraftScenario(window.localStorage, persisted);
+      writePendingCloudSync(window.localStorage, persisted, updatedAt);
+      hasLocalDraftRef.current = true;
+      hasPendingCloudSyncRef.current = true;
     }
     setCloudSyncStatus((current) => (current === "syncing" ? current : "pending"));
   }, [scenario]);
