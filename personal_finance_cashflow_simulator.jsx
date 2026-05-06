@@ -11,6 +11,7 @@ import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
 import {
+  clearPendingCloudSync,
   readDraftScenario,
   readPendingCloudSync,
   resolveHydrationSource,
@@ -2762,6 +2763,10 @@ export default function PersonalFinanceCashflowSimulator() {
         setCloudNotice(error.message);
         return { error };
       }
+      if (typeof window !== "undefined" && window.localStorage) {
+        clearPendingCloudSync(window.localStorage);
+      }
+      hasPendingCloudSyncRef.current = false;
       setCloudBackupUpdatedAt(data?.updated_at || new Date().toISOString());
       setCloudSyncStatus("synced");
       setSessionMeta(writeSessionMeta({ lastSyncedAt: new Date().toISOString(), lastSyncAttemptAt: attemptAt }));
