@@ -41,7 +41,11 @@ import {
   reserveTarget,
   resolveJpyCashTwd,
 } from "./lib/finance.js";
-import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
+import {
+  getNumericInputDisplayValue,
+  normalizeNumericInput,
+  stepNumericValue,
+} from "./lib/numberField.js";
 import {
   FALLBACK_JPY_TO_TWD_RATE,
   fetchJpyToTwdRate,
@@ -1609,7 +1613,7 @@ function Field({
             type="number"
             min={min}
             step={step}
-            value={value}
+            value={getNumericInputDisplayValue(value, isFocused)}
             disabled={disabled}
             onChange={(event) =>
               onChange(normalizeNumericInput(event.target.value, { min, precision }))
