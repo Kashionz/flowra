@@ -101,9 +101,13 @@ export function useCloudSync({
   isOffline,
   applyCloudPayload, // (payload) => void; called when refresh's applyPayload=true
   hasPendingCloudSyncRef,
+  initialSyncStatus, // optional — hydrate the sync status from a persisted snapshot
 }) {
   const supabaseReady = useMemo(() => isSupabaseConfigured(), []);
-  const [state, dispatch] = useReducer(cloudReducer, cloudInitialState);
+  const [state, dispatch] = useReducer(cloudReducer, cloudInitialState, (init) => ({
+    ...init,
+    syncStatus: initialSyncStatus || init.syncStatus,
+  }));
 
   // Stable adapter setters — same shape as the React useState setter
   // (accept a value or an updater function), so callers don't need to
