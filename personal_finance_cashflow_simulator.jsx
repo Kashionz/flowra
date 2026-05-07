@@ -13,6 +13,7 @@ import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
 import {
   clearPendingCloudSync,
   doesPendingCloudSyncMatchPayload,
+  formatAutoSyncStatus,
   readDraftScenario,
   readPendingCloudSync,
   resolveInitialCloudSyncStatus,
@@ -2172,6 +2173,7 @@ export default function PersonalFinanceCashflowSimulator() {
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isPreparingPdf, setIsPreparingPdf] = useState(false);
   const [isPreparingReportExport, setIsPreparingReportExport] = useState(false);
+  const [isOffline, setIsOffline] = useState(() => (typeof navigator === "undefined" ? false : !navigator.onLine));
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1200 : window.innerWidth));
   const [bulkInstallmentText, setBulkInstallmentText] = useState("");
   const [bulkInstallmentErrors, setBulkInstallmentErrors] = useState([]);
@@ -2182,6 +2184,7 @@ export default function PersonalFinanceCashflowSimulator() {
   const hasLocalDraftRef = useRef(false);
   const hasPendingCloudSyncRef = useRef(false);
   const hydrationInitializedRef = useRef(false);
+  const autoSyncTimerRef = useRef(null);
   const scenarioInitializedRef = useRef(false);
   const skipNextScenarioDirtyRef = useRef(false);
   const reportRef = useRef(null);
@@ -2251,6 +2254,20 @@ export default function PersonalFinanceCashflowSimulator() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const updateOnlineState = () => setIsOffline(!navigator.onLine);
+
+    window.addEventListener("online", updateOnlineState);
+    window.addEventListener("offline", updateOnlineState);
+
+    return () => {
+      window.removeEventListener("online", updateOnlineState);
+      window.removeEventListener("offline", updateOnlineState);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!scenarioInitializedRef.current) {
       scenarioInitializedRef.current = true;
       return;
@@ -2274,6 +2291,33 @@ export default function PersonalFinanceCashflowSimulator() {
     if (!selectedMonthKey || !monthRefs.current[selectedMonthKey]) return;
     monthRefs.current[selectedMonthKey].scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }, [selectedMonthKey]);
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      cloudAuthState !== "authenticated" ||
+      cloudSetupState !== "ready" ||
+      cloudSyncStatus !== "pending" ||
+      isOffline
+    ) {
+      return undefined;
+    }
+
+    const pendingCloudSync = readPendingCloudSync(window.localStorage);
+    if (!pendingCloudSync?.payload) return undefined;
+
+    autoSyncTimerRef.current = window.setTimeout(async () => {
+      autoSyncTimerRef.current = null;
+      await syncScenarioToCloud(pendingCloudSync.payload, { silent: true });
+    }, 1500);
+
+    return () => {
+      if (autoSyncTimerRef.current) {
+        window.clearTimeout(autoSyncTimerRef.current);
+        autoSyncTimerRef.current = null;
+      }
+    };
+  }, [cloudAuthState, cloudSetupState, cloudSyncStatus, isOffline, scenario]);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -2748,10 +2792,10 @@ export default function PersonalFinanceCashflowSimulator() {
       setCloudNotice(cloudSetupMessage);
       return { error: new Error(cloudSetupMessage) };
     }
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
+    if (isOffline) {
       setCloudSyncStatus("pending");
       if (!silent) {
-        setCloudNotice("目前離線，這次變更尚未同步；恢復連線後請再手動同步。");
+        setCloudNotice("目前離線，這次變更尚未同步；恢復連線後會自動再試同步。");
       }
       return { error: new Error("offline") };
     }
@@ -2811,17 +2855,14 @@ export default function PersonalFinanceCashflowSimulator() {
             ? "雲端備份狀態檢查失敗。"
             : getSupabaseConfigHint();
   const cloudFeaturesEnabled = cloudAuthState === "authenticated" && cloudSetupState === "ready";
-  const cloudStatusLine = (() => {
-    if (cloudAuthState === "checking") return "確認登入中…";
-    if (cloudAuthState !== "authenticated") return "登入後可啟用雲端備份";
-    if (cloudSetupState === "checking") return "檢查雲端狀態中…";
-    if (cloudSetupState !== "ready") return cloudSetupMessage;
-    const tail = lastSyncedAtLabel ? ` · ${lastSyncedAtLabel}` : "";
-    if (cloudSyncStatus === "syncing") return "同步中…";
-    if (cloudSyncStatus === "pending") return `有未同步變更${tail}`;
-    if (cloudSyncStatus === "synced") return `已同步${tail}`;
-    return lastSyncedAtLabel ? `已過期${tail}` : "尚未備份";
-  })();
+  const cloudStatusLine = formatAutoSyncStatus({
+    cloudAuthState,
+    cloudSetupState,
+    cloudSyncStatus,
+    lastSyncedAtLabel,
+    isOffline,
+    cloudSetupMessage,
+  });
   const cloudStatusIsWarning =
     cloudAuthState !== "authenticated" || (cloudAuthState === "authenticated" && cloudSetupState !== "ready" && cloudSetupState !== "checking");
 
