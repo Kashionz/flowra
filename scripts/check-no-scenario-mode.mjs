@@ -22,8 +22,12 @@ const forbiddenCodeSnippets = [
 ];
 
 const failures = [
-  ...forbiddenTexts.filter((text) => source.includes(text)).map((text) => `仍有情境/版本 UI 文案: ${text}`),
-  ...forbiddenCodeSnippets.filter((text) => source.includes(text)).map((text) => `仍有情境/版本流程程式碼: ${text}`),
+  ...forbiddenTexts
+    .filter((text) => source.includes(text))
+    .map((text) => `仍有情境/版本 UI 文案: ${text}`),
+  ...forbiddenCodeSnippets
+    .filter((text) => source.includes(text))
+    .map((text) => `仍有情境/版本流程程式碼: ${text}`),
 ];
 
 if (failures.length) {

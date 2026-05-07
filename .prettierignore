@@ -1,0 +1,7 @@
+dist
+node_modules
+styles/flowra.css
+supabase
+coverage
+**/*.min.js
+pnpm-lock.yaml

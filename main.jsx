@@ -11,5 +11,5 @@ if (!container) {
 createRoot(container).render(
   <React.StrictMode>
     <PersonalFinanceCashflowSimulator />
-  </React.StrictMode>
+  </React.StrictMode>,
 );
