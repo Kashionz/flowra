@@ -3346,9 +3346,9 @@ export default function PersonalFinanceCashflowSimulator() {
         }
       `}</style>
       <div style={{ ...styles.container, ...styles.chartTheme }} className={`flowra-print-root${isPreparingPdf ? " flowra-pdf-export" : ""}${isPreparingReportExport ? " flowra-report-export" : ""}`} ref={reportRef}>
-        <div style={{ ...styles.header, userSelect: "none", WebkitUserSelect: "none" }}>
+        <div style={styles.header}>
           <div>
-            <h1 style={styles.title}>Flowra</h1>
+            <h1 style={{ ...styles.title, userSelect: "none", WebkitUserSelect: "none" }}>Flowra</h1>
             <p style={styles.subtitle}>
               用來試算未來幾個月的現金流與支出變化。
             </p>
