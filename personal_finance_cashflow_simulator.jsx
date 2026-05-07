@@ -330,6 +330,28 @@ function writeSessionMeta(patch) {
   return next;
 }
 
+/**
+ * Reads everything we need from localStorage in one shot during the
+ * very first render, so each downstream hook (`useUndoableState`,
+ * `useState`, `useReducer`, `useRef`) can be initialised lazily from
+ * a consistent snapshot. Doing this once here means we don't have to
+ * synchronously setState inside a mount effect later.
+ */
+function readInitialBoot() {
+  if (typeof window === "undefined") {
+    return {
+      localDraft: null,
+      pendingCloudSync: null,
+      sessionMeta: { lastOpenedAt: "", lastSyncedAt: "", lastSyncAttemptAt: "" },
+    };
+  }
+  return {
+    localDraft: readDraftScenario(window.localStorage),
+    pendingCloudSync: readPendingCloudSync(window.localStorage),
+    sessionMeta: readSessionMeta(),
+  };
+}
+
 function formatTimestamp(value) {
   if (!value) return "—";
   const date = new Date(value);
@@ -2781,6 +2803,10 @@ const styles = {
 };
 
 export default function PersonalFinanceCashflowSimulator() {
+  // Read everything we need from localStorage in one synchronous pass
+  // on the first render. Each downstream hook then initialises lazily
+  // from this snapshot — no setState-in-effect required at mount.
+  const [initialBoot] = useState(readInitialBoot);
   const {
     value: scenario,
     setValue: setScenario,
@@ -2790,9 +2816,13 @@ export default function PersonalFinanceCashflowSimulator() {
     redo: redoScenario,
     canUndo,
     canRedo,
-  } = useUndoableState(() => createDefaultScenario());
-  const [sessionMeta, setSessionMeta] = useState(() => readSessionMeta());
-  const [selectedMonthKey, setSelectedMonthKey] = useState("");
+  } = useUndoableState(() => initialBoot.localDraft || createDefaultScenario());
+  const [sessionMeta, setSessionMeta] = useState(() => initialBoot.sessionMeta);
+  // The user's explicit month selection. The displayed month
+  // (`selectedMonthKey` below) falls back to the first projected row
+  // when the user hasn't picked one, so we don't have to mirror that
+  // default into state.
+  const [userSelectedMonthKey, setUserSelectedMonthKey] = useState("");
   const [expenseMode, setExpenseMode] = useState("absolute");
   const [expenseView, setExpenseView] = useState("group");
   const [isOneTimeOpen, setIsOneTimeOpen] = useState(false);
@@ -2819,11 +2849,14 @@ export default function PersonalFinanceCashflowSimulator() {
   const monthRefs = useRef({});
   const fileInputRef = useRef(null);
   const cloudHydratedRef = useRef(false);
-  const hasLocalDraftRef = useRef(false);
-  const hasPendingCloudSyncRef = useRef(false);
-  const pendingExistedAtMountRef = useRef(false);
-  const pendingUpdatedAtAtMountRef = useRef(null);
-  const hydrationInitializedRef = useRef(false);
+  const hasLocalDraftRef = useRef(Boolean(initialBoot.localDraft));
+  const hasPendingCloudSyncRef = useRef(Boolean(initialBoot.pendingCloudSync));
+  const pendingExistedAtMountRef = useRef(Boolean(initialBoot.pendingCloudSync));
+  const pendingUpdatedAtAtMountRef = useRef(initialBoot.pendingCloudSync?.updatedAt || null);
+  // Synchronous boot: hydration is "initialised" from the very first
+  // render because we already wired the local draft into useUndoableState
+  // and the initial cloud sync status into useCloudSync above.
+  const hydrationInitializedRef = useRef(true);
   const autoSyncTimerRef = useRef(null);
   const scenarioInitializedRef = useRef(false);
   const skipNextScenarioDirtyRef = useRef(false);
@@ -2890,7 +2923,7 @@ export default function PersonalFinanceCashflowSimulator() {
       } else {
         replaceScenario(migrated);
       }
-      setSelectedMonthKey("");
+      setUserSelectedMonthKey("");
     },
     [resetScenarioHistory, replaceScenario],
   );
@@ -2912,6 +2945,15 @@ export default function PersonalFinanceCashflowSimulator() {
     isOffline,
     applyCloudPayload,
     hasPendingCloudSyncRef,
+    initialSyncStatus: useMemo(
+      () =>
+        resolveInitialCloudSyncStatus({
+          localDraft: initialBoot.localDraft,
+          pendingCloudSync: initialBoot.pendingCloudSync,
+          lastSyncedAt: initialBoot.sessionMeta.lastSyncedAt,
+        }),
+      [initialBoot],
+    ),
   });
   const {
     authState: cloudAuthState,
@@ -2933,40 +2975,18 @@ export default function PersonalFinanceCashflowSimulator() {
     signOut: signOutFromSupabase,
   } = cloud;
 
+  // Persist the latest "lastOpenedAt" timestamp on mount. This is a
+  // pure side effect to localStorage — no state needs to track this
+  // value (it's only ever read on next boot via readSessionMeta), so
+  // we don't synchronously call setSessionMeta here.
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const localDraft = readDraftScenario(window.localStorage);
-      const pendingCloudSync = readPendingCloudSync(window.localStorage);
-
-      hasLocalDraftRef.current = Boolean(localDraft);
-      hasPendingCloudSyncRef.current = Boolean(pendingCloudSync);
-      pendingExistedAtMountRef.current = Boolean(pendingCloudSync);
-      pendingUpdatedAtAtMountRef.current = pendingCloudSync?.updatedAt || null;
-
-      if (localDraft) {
-        transitionApply(localDraft, { markDirty: false });
-      }
-      setCloudSyncStatus(
-        resolveInitialCloudSyncStatus({
-          localDraft,
-          pendingCloudSync,
-          lastSyncedAt: sessionMeta.lastSyncedAt,
-        }),
-      );
-    }
-    hydrationInitializedRef.current = true;
-    setSessionMeta(writeSessionMeta({ lastOpenedAt: new Date().toISOString() }));
-    // Mount-only effect: intentionally re-runs only on first mount so we
-    // don't replay hydration when sessionMeta updates after a sync. The
-    // referenced helpers (transitionApply, setCloudSyncStatus) are
-    // captured by closure on first render, which is what we want here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (typeof window === "undefined") return;
+    writeSessionMeta({ lastOpenedAt: new Date().toISOString() });
   }, []);
 
-  useEffect(() => {
-    const selected = rows[0]?.monthKey || "";
-    setSelectedMonthKey((current) => current || selected);
-  }, [rows]);
+  // selectedMonthKey is purely derived: user pick wins, otherwise the
+  // first projected row's month. No effect needed.
+  const selectedMonthKey = userSelectedMonthKey || rows[0]?.monthKey || "";
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -3589,7 +3609,7 @@ export default function PersonalFinanceCashflowSimulator() {
   };
 
   const focusCompositionMonth = (monthKey) => {
-    setSelectedMonthKey(monthKey);
+    setUserSelectedMonthKey(monthKey);
     if (compositionChartRef.current) {
       compositionChartRef.current.scrollIntoView({
         behavior: "smooth",
@@ -4805,7 +4825,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 rows={rows}
                 reserveLine={reserveTarget(scenario)}
                 selectedMonthKey={selectedMonthKey}
-                onSelectMonth={setSelectedMonthKey}
+                onSelectMonth={setUserSelectedMonthKey}
               />
             </InteractiveSurface>
 
