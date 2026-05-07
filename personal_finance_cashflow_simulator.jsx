@@ -31,6 +31,7 @@ import {
   buildProjection,
   clampMonthIndex,
   currency,
+  decorateInstallments,
   currentBaseMonth,
   exportFileBase,
   formatMonthLabel,
@@ -2865,6 +2866,10 @@ export default function PersonalFinanceCashflowSimulator() {
     () => (Array.isArray(projectionResult) ? [] : projectionResult.installmentRows),
     [projectionResult],
   );
+  const editableInstallments = useMemo(
+    () => decorateInstallments(scenario.installments),
+    [scenario.installments],
+  );
   const generatedAt = useMemo(() => new Date(), []);
   const reportPeriodLabel = useMemo(() => {
     if (!rows.length) return `${formatMonthLabel(scenario.meta.baseMonth)} 起`;
@@ -4233,7 +4238,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 >
                   <Chevron open={isInstallmentsOpen} />
                   <span>分期付款</span>
-                  <CountPill count={installmentRows.length} />
+                  <CountPill count={editableInstallments.length} />
                 </button>
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                   <InteractiveButton
@@ -4253,7 +4258,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 </div>
               </div>
               <Collapsible open={isInstallmentsOpen}>
-                {installmentRows.length === 0 ? (
+                {editableInstallments.length === 0 ? (
                   <div
                     style={{
                       ...styles.mutedBox,
@@ -4272,10 +4277,10 @@ export default function PersonalFinanceCashflowSimulator() {
                     onDragEnd={handleInstallmentDragEnd}
                   >
                     <SortableContext
-                      items={installmentRows.map((item) => item.id)}
+                      items={editableInstallments.map((item) => item.id)}
                       strategy={verticalListSortingStrategy}
                     >
-                      {installmentRows.map((item) => {
+                      {editableInstallments.map((item) => {
                         const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
                         const endMonth = addMonths(item.startMonth, item.terms - 1);
                         return (
