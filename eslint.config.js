@@ -52,9 +52,12 @@ export default [
       "no-empty": ["error", { allowEmptyCatch: true }],
       "no-irregular-whitespace": ["error", { skipStrings: true, skipJSXText: true }],
       "react-hooks/exhaustive-deps": "warn",
-      // The plugin v7 ships stricter rules that flag the current cloud-sync
-      // structure (PR 4 will refactor those into a useReducer). Disable for
-      // now so PR 1 only enforces the lower-friction ground rules.
+      // Plugin v7 strict rules still fire on the legitimate but
+      // entangled cloud-sync helpers — `refreshCloudBackup`,
+      // `syncScenarioToCloud`, and `transitionApply` are declared after
+      // the effects that close over them. Fixing that requires lifting
+      // them above the effects (or extracting them into a custom hook),
+      // which is the next refactor. Until then, keep the rule off.
       "react-hooks/immutability": "off",
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/refs": "off",

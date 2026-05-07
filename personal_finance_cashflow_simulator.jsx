@@ -1,4 +1,12 @@
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import "./styles/flowra.css";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
@@ -2810,6 +2818,62 @@ const styles = {
   },
 };
 
+const cloudInitialState = {
+  // Lifecycle states keep their pre-existing string contracts so any
+  // helper that switches on them keeps working.
+  authState: isSupabaseConfigured() ? "checking" : "unconfigured",
+  setupState: isSupabaseConfigured() ? "checking" : "unconfigured",
+  syncStatus: "idle",
+  userEmail: "",
+  notice: "",
+  isBackupLoading: false,
+  isSigningIn: false,
+  isHydrated: false,
+};
+
+function cloudReducer(state, action) {
+  switch (action.type) {
+    case "auth/state": {
+      const next =
+        typeof action.value === "function" ? action.value(state.authState) : action.value;
+      return state.authState === next ? state : { ...state, authState: next };
+    }
+    case "setup/state": {
+      const next =
+        typeof action.value === "function" ? action.value(state.setupState) : action.value;
+      return state.setupState === next ? state : { ...state, setupState: next };
+    }
+    case "sync/status": {
+      const next =
+        typeof action.value === "function" ? action.value(state.syncStatus) : action.value;
+      return state.syncStatus === next ? state : { ...state, syncStatus: next };
+    }
+    case "user/email": {
+      const next =
+        typeof action.value === "function" ? action.value(state.userEmail) : action.value;
+      return state.userEmail === next ? state : { ...state, userEmail: next };
+    }
+    case "notice": {
+      const next = typeof action.value === "function" ? action.value(state.notice) : action.value;
+      return state.notice === next ? state : { ...state, notice: next };
+    }
+    case "backup/loading": {
+      const next =
+        typeof action.value === "function" ? action.value(state.isBackupLoading) : action.value;
+      return state.isBackupLoading === next ? state : { ...state, isBackupLoading: next };
+    }
+    case "signin/loading": {
+      const next =
+        typeof action.value === "function" ? action.value(state.isSigningIn) : action.value;
+      return state.isSigningIn === next ? state : { ...state, isSigningIn: next };
+    }
+    case "hydration/done":
+      return state.isHydrated ? state : { ...state, isHydrated: true };
+    default:
+      return state;
+  }
+}
+
 export default function PersonalFinanceCashflowSimulator() {
   const {
     value: scenario,
@@ -2831,18 +2895,46 @@ export default function PersonalFinanceCashflowSimulator() {
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [openOneTimeItemIds, setOpenOneTimeItemIds] = useState({});
   const [openInstallmentItemIds, setOpenInstallmentItemIds] = useState({});
-  const [cloudNotice, setCloudNotice] = useState("");
-  const [cloudSyncStatus, setCloudSyncStatus] = useState("idle");
-  const [cloudAuthState, setCloudAuthState] = useState(() =>
-    isSupabaseConfigured() ? "checking" : "unconfigured",
+  const [cloudState, dispatchCloud] = useReducer(cloudReducer, cloudInitialState);
+  const {
+    authState: cloudAuthState,
+    setupState: cloudSetupState,
+    syncStatus: cloudSyncStatus,
+    userEmail: cloudUserEmail,
+    notice: cloudNotice,
+    isBackupLoading: isCloudBackupLoading,
+    isSigningIn: isSigningInWithGoogle,
+    isHydrated: isCloudHydrated,
+  } = cloudState;
+  // Stable adapter functions so the rest of the component keeps the
+  // setX(value) shape it had before. Each one is wrapped in useCallback
+  // (inside the reducer) so dependency arrays stay tight.
+  const setCloudAuthState = useCallback(
+    (value) => dispatchCloud({ type: "auth/state", value }),
+    [],
   );
-  const [cloudSetupState, setCloudSetupState] = useState(() =>
-    isSupabaseConfigured() ? "checking" : "unconfigured",
+  const setCloudSetupState = useCallback(
+    (value) => dispatchCloud({ type: "setup/state", value }),
+    [],
   );
-  const [cloudUserEmail, setCloudUserEmail] = useState("");
-  const [isSigningInWithGoogle, setIsSigningInWithGoogle] = useState(false);
-  const [isCloudBackupLoading, setIsCloudBackupLoading] = useState(false);
-  const [isCloudHydrated, setIsCloudHydrated] = useState(false);
+  const setCloudSyncStatus = useCallback(
+    (value) => dispatchCloud({ type: "sync/status", value }),
+    [],
+  );
+  const setCloudUserEmail = useCallback(
+    (value) => dispatchCloud({ type: "user/email", value }),
+    [],
+  );
+  const setCloudNotice = useCallback((value) => dispatchCloud({ type: "notice", value }), []);
+  const setIsCloudBackupLoading = useCallback(
+    (value) => dispatchCloud({ type: "backup/loading", value }),
+    [],
+  );
+  const setIsSigningInWithGoogle = useCallback(
+    (value) => dispatchCloud({ type: "signin/loading", value }),
+    [],
+  );
+  const setIsCloudHydrated = useCallback(() => dispatchCloud({ type: "hydration/done" }), []);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [hydrationNotice, setHydrationNotice] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
@@ -2945,6 +3037,10 @@ export default function PersonalFinanceCashflowSimulator() {
     }
     hydrationInitializedRef.current = true;
     setSessionMeta(writeSessionMeta({ lastOpenedAt: new Date().toISOString() }));
+    // Mount-only effect: intentionally runs once with the initial
+    // sessionMeta / transitionApply closures. Wiring those into deps
+    // would re-fire hydration on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -3001,7 +3097,7 @@ export default function PersonalFinanceCashflowSimulator() {
       hasPendingCloudSyncRef.current = true;
     }
     setCloudSyncStatus((current) => (current === "syncing" ? current : "pending"));
-  }, [scenario]);
+  }, [scenario, setCloudSyncStatus]);
 
   useEffect(() => {
     if (!selectedMonthKey || !monthRefs.current[selectedMonthKey]) return;
@@ -3038,6 +3134,11 @@ export default function PersonalFinanceCashflowSimulator() {
         autoSyncTimerRef.current = null;
       }
     };
+    // syncScenarioToCloud is recreated each render; inlining it in deps
+    // would re-arm the debounce timer on every keystroke. The closure
+    // here always sees the latest reference because the effect itself
+    // re-runs whenever scenario / cloud states change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloudAuthState, cloudSetupState, cloudSyncStatus, isCloudHydrated, isOffline, scenario]);
 
   useEffect(() => {
@@ -3137,7 +3238,7 @@ export default function PersonalFinanceCashflowSimulator() {
       mounted = false;
       subscription?.subscription?.unsubscribe();
     };
-  }, [supabaseReady]);
+  }, [supabaseReady, setCloudAuthState, setCloudUserEmail]);
 
   useEffect(() => {
     if (!supabaseReady) {
@@ -3168,7 +3269,7 @@ export default function PersonalFinanceCashflowSimulator() {
     return () => {
       cancelled = true;
     };
-  }, [supabaseReady]);
+  }, [supabaseReady, setCloudNotice, setCloudSetupState]);
 
   useEffect(() => {
     if (
@@ -3246,7 +3347,13 @@ export default function PersonalFinanceCashflowSimulator() {
     return () => {
       cancelled = true;
     };
-  }, [cloudAuthState, cloudSetupState, supabaseReady]);
+    // refreshCloudBackup / transitionApply are recreated each render,
+    // so listing them in deps would cycle this hydration effect on
+    // every keystroke. The effect is gated on cloudHydratedRef.current
+    // and the auth/setup state transitions, which is the actual
+    // dependency surface we want.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudAuthState, cloudSetupState, supabaseReady, setCloudSyncStatus, setIsCloudHydrated]);
 
   const summary = useMemo(() => {
     const balances = rows.map((row) => row.balance);
