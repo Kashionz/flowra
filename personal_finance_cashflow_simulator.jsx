@@ -24,7 +24,7 @@ import { DATA_MANAGEMENT_ACTIONS, getImportReplaceNotice } from "./lib/dataManag
 import { makeItemId, syncItemIdSequenceFromScenario } from "./lib/itemIds.js";
 import { describeHydrationDecision } from "./lib/hydrationNotice.js";
 import { computeImportDiff } from "./lib/importDiff.js";
-import { isScenarioEmpty as isScenarioEmptyHelper, readInitialBoot } from "./lib/initialBoot.js";
+import { readInitialBoot } from "./lib/initialBoot.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import {
   addMonths,
@@ -3192,12 +3192,6 @@ export default function PersonalFinanceCashflowSimulator() {
     return { minBalance, finalBalance, totalIncome, totalExpense, totalInstallmentInterest };
   }, [rows, installmentRows]);
 
-  const isScenarioEmpty = useMemo(() => isScenarioEmptyHelper(scenario), [scenario]);
-
-  const loadTemplate = (templateKey) => {
-    transitionApply(createTemplateScenario(templateKey));
-  };
-
   const patchMeta = (patch) => {
     setScenario((current) => cloneScenario(current, { meta: { ...current.meta, ...patch } }));
   };
@@ -3717,38 +3711,6 @@ export default function PersonalFinanceCashflowSimulator() {
             </div>
           </div>
         </div>
-
-        {isScenarioEmpty ? (
-          <InteractiveSurface
-            as="section"
-            className="flowra-no-print flowra-no-report-export"
-            style={{
-              ...styles.card,
-              padding: "20px 22px",
-              marginBottom: "20px",
-              border: "1px dashed #cbd5e1",
-              background: "#f8fafc",
-            }}
-            hoverClassName=""
-          >
-            <h2 style={{ ...styles.cardTitle, margin: "0 0 8px" }}>從這裡開始</h2>
-            <p style={{ ...styles.subtitle, margin: "0 0 14px" }}>
-              在「試算設定」填入手上現金與每月薪水就會立即看到試算，或先載入一個範例情境再調整。
-            </p>
-            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <InteractiveButton onClick={() => loadTemplate("graduate")} variant="smallButton">
-                載入｜社會新鮮人
-              </InteractiveButton>
-              <InteractiveButton onClick={() => loadTemplate("family")} variant="smallButton">
-                載入｜有小孩家庭
-              </InteractiveButton>
-              <InteractiveButton onClick={() => loadTemplate("freelancer")} variant="smallButton">
-                載入｜自由工作者
-              </InteractiveButton>
-            </div>
-          </InteractiveSurface>
-        ) : null}
-
         <div style={styles.summaryGrid}>
           <StatCard
             label="最後剩餘現金"
