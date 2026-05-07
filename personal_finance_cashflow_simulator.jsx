@@ -3014,6 +3014,182 @@ export default function PersonalFinanceCashflowSimulator() {
     [sessionMeta.lastSyncedAt],
   );
 
+  const cloudSetupMessage = useMemo(() => {
+    switch (cloudSetupState) {
+      case "ready":
+        return "雲端備份已就緒。";
+      case "checking":
+        return "正在檢查雲端備份狀態。";
+      case "missing":
+        return "雲端備份目前暫時不可用。";
+      case "error":
+        return "雲端備份狀態檢查失敗。";
+      default:
+        return getSupabaseConfigHint();
+    }
+  }, [cloudSetupState]);
+
+  const transitionApply = useCallback(
+    (nextScenario, options = {}) => {
+      skipNextScenarioDirtyRef.current = options.markDirty === false;
+      const migrated = migrateLegacyScenario(nextScenario);
+      // Authoritative loads (mount hydration, cloud refresh) wipe the
+      // history; user-initiated replacements (import, template load)
+      // push the prior value so Undo / Redo still works.
+      if (options.markDirty === false) {
+        resetScenarioHistory(migrated);
+      } else {
+        replaceScenario(migrated);
+      }
+      setSelectedMonthKey("");
+    },
+    [resetScenarioHistory, replaceScenario],
+  );
+
+  const refreshCloudBackup = useCallback(
+    async (options = {}) => {
+      const { silent = false, applyPayload = false } = options;
+      if (cloudSetupState !== "ready") {
+        if (!silent) {
+          setCloudNotice(cloudSetupMessage);
+        }
+        return { data: null, error: new Error(cloudSetupMessage) };
+      }
+      if (cloudAuthState !== "authenticated") {
+        const error = new Error("請先登入，才能讀取雲端備份。");
+        if (!silent) {
+          setCloudNotice(error.message);
+        }
+        return { data: null, error };
+      }
+
+      setIsCloudBackupLoading(true);
+      try {
+        const { data, error } = await getLatestCloudBackup();
+        if (error) {
+          if (!silent) {
+            setCloudNotice(error.message);
+          }
+          return { data: null, error };
+        }
+
+        if (!data?.payload) {
+          setCloudBackupUpdatedAt("");
+          if (!silent) {
+            setCloudNotice("雲端目前沒有備份。");
+          }
+          return { data: null, error: null };
+        }
+
+        setCloudBackupUpdatedAt(data.updated_at || "");
+
+        if (applyPayload) {
+          transitionApply(data.payload, { markDirty: false });
+          setCloudSyncStatus("synced");
+          setCloudNotice("已從雲端還原最近備份。");
+        } else if (!silent) {
+          setCloudNotice(`已找到最近備份（${formatTimestamp(data.updated_at)}）。`);
+        }
+
+        return { data, error: null };
+      } catch (error) {
+        const normalizedError = error instanceof Error ? error : new Error("讀取雲端備份失敗。");
+        if (!silent) {
+          setCloudNotice(normalizedError.message);
+        }
+        return { data: null, error: normalizedError };
+      } finally {
+        setIsCloudBackupLoading(false);
+      }
+    },
+    [
+      cloudSetupState,
+      cloudAuthState,
+      cloudSetupMessage,
+      transitionApply,
+      setCloudNotice,
+      setIsCloudBackupLoading,
+      setCloudBackupUpdatedAt,
+      setCloudSyncStatus,
+    ],
+  );
+
+  const syncScenarioToCloud = useCallback(
+    async (payloadOverride, options = {}) => {
+      const safePayload = resolveSyncPayload(payloadOverride, scenario);
+      const { silent = false } = options;
+      const attemptAt = new Date().toISOString();
+      setSessionMeta(writeSessionMeta({ lastSyncAttemptAt: attemptAt }));
+      if (!supabaseReady) {
+        setCloudNotice(getSupabaseConfigHint());
+        return { error: new Error(getSupabaseConfigHint()) };
+      }
+      if (cloudSetupState !== "ready") {
+        setCloudNotice(cloudSetupMessage);
+        return { error: new Error(cloudSetupMessage) };
+      }
+      if (isOffline) {
+        setCloudSyncStatus("pending");
+        if (!silent) {
+          setCloudNotice("目前離線，這次變更尚未同步；恢復連線後會自動再試同步。");
+        }
+        return { error: new Error("offline") };
+      }
+      setCloudSyncStatus("syncing");
+      try {
+        const { data, error } = await withTimeout(
+          upsertCloudBackup({
+            payload: safePayload,
+          }),
+          12000,
+          "同步雲端備份逾時，請確認網路後再試。",
+        );
+        if (error) {
+          setCloudSyncStatus("pending");
+          setCloudNotice(error.message);
+          return { error };
+        }
+        let pendingStillMatchesSyncedPayload = true;
+        if (typeof window !== "undefined" && window.localStorage) {
+          const pendingCloudSync = readPendingCloudSync(window.localStorage);
+          pendingStillMatchesSyncedPayload = doesPendingCloudSyncMatchPayload(
+            pendingCloudSync,
+            safePayload,
+          );
+          if (pendingStillMatchesSyncedPayload) {
+            clearPendingCloudSync(window.localStorage);
+          }
+        }
+        hasPendingCloudSyncRef.current = !pendingStillMatchesSyncedPayload;
+        setCloudBackupUpdatedAt(data?.updated_at || new Date().toISOString());
+        setCloudSyncStatus(pendingStillMatchesSyncedPayload ? "synced" : "pending");
+        setSessionMeta(
+          writeSessionMeta({
+            lastSyncedAt: new Date().toISOString(),
+            lastSyncAttemptAt: attemptAt,
+          }),
+        );
+        setCloudNotice("目前內容已同步到雲端備份。");
+        return { error: null };
+      } catch (error) {
+        setCloudSyncStatus("pending");
+        const normalizedError = error instanceof Error ? error : new Error("同步雲端備份失敗。");
+        setCloudNotice(normalizedError.message);
+        return { error: normalizedError };
+      }
+    },
+    [
+      scenario,
+      supabaseReady,
+      cloudSetupState,
+      cloudSetupMessage,
+      isOffline,
+      setCloudNotice,
+      setCloudSyncStatus,
+      setCloudBackupUpdatedAt,
+    ],
+  );
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       const localDraft = readDraftScenario(window.localStorage);
@@ -3037,9 +3213,10 @@ export default function PersonalFinanceCashflowSimulator() {
     }
     hydrationInitializedRef.current = true;
     setSessionMeta(writeSessionMeta({ lastOpenedAt: new Date().toISOString() }));
-    // Mount-only effect: intentionally runs once with the initial
-    // sessionMeta / transitionApply closures. Wiring those into deps
-    // would re-fire hydration on every keystroke.
+    // Mount-only effect: intentionally re-runs only on first mount so we
+    // don't replay hydration when sessionMeta updates after a sync. The
+    // referenced helpers (transitionApply, setCloudSyncStatus) are
+    // captured by closure on first render, which is what we want here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -3134,12 +3311,15 @@ export default function PersonalFinanceCashflowSimulator() {
         autoSyncTimerRef.current = null;
       }
     };
-    // syncScenarioToCloud is recreated each render; inlining it in deps
-    // would re-arm the debounce timer on every keystroke. The closure
-    // here always sees the latest reference because the effect itself
-    // re-runs whenever scenario / cloud states change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cloudAuthState, cloudSetupState, cloudSyncStatus, isCloudHydrated, isOffline, scenario]);
+  }, [
+    cloudAuthState,
+    cloudSetupState,
+    cloudSyncStatus,
+    isCloudHydrated,
+    isOffline,
+    scenario,
+    syncScenarioToCloud,
+  ]);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -3347,13 +3527,15 @@ export default function PersonalFinanceCashflowSimulator() {
     return () => {
       cancelled = true;
     };
-    // refreshCloudBackup / transitionApply are recreated each render,
-    // so listing them in deps would cycle this hydration effect on
-    // every keystroke. The effect is gated on cloudHydratedRef.current
-    // and the auth/setup state transitions, which is the actual
-    // dependency surface we want.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cloudAuthState, cloudSetupState, supabaseReady, setCloudSyncStatus, setIsCloudHydrated]);
+  }, [
+    cloudAuthState,
+    cloudSetupState,
+    supabaseReady,
+    refreshCloudBackup,
+    transitionApply,
+    setCloudSyncStatus,
+    setIsCloudHydrated,
+  ]);
 
   const summary = useMemo(() => {
     const balances = rows.map((row) => row.balance);
@@ -3380,20 +3562,6 @@ export default function PersonalFinanceCashflowSimulator() {
       scenario.installments.length === 0
     );
   }, [scenario]);
-
-  const transitionApply = (nextScenario, options = {}) => {
-    skipNextScenarioDirtyRef.current = options.markDirty === false;
-    const migrated = migrateLegacyScenario(nextScenario);
-    // Authoritative loads (mount hydration, cloud refresh) wipe the
-    // history; user-initiated replacements (import, template load) push
-    // the prior value so Undo / Redo still works.
-    if (options.markDirty === false) {
-      resetScenarioHistory(migrated);
-    } else {
-      replaceScenario(migrated);
-    }
-    setSelectedMonthKey("");
-  };
 
   const loadTemplate = (templateKey) => {
     transitionApply(createTemplateScenario(templateKey));
@@ -3768,123 +3936,6 @@ export default function PersonalFinanceCashflowSimulator() {
     setCloudNotice("已登出。");
   };
 
-  const refreshCloudBackup = async (options = {}) => {
-    const { silent = false, applyPayload = false } = options;
-    if (cloudSetupState !== "ready") {
-      if (!silent) {
-        setCloudNotice(cloudSetupMessage);
-      }
-      return { data: null, error: new Error(cloudSetupMessage) };
-    }
-    if (cloudAuthState !== "authenticated") {
-      const error = new Error("請先登入，才能讀取雲端備份。");
-      if (!silent) {
-        setCloudNotice(error.message);
-      }
-      return { data: null, error };
-    }
-
-    setIsCloudBackupLoading(true);
-    try {
-      const { data, error } = await getLatestCloudBackup();
-      if (error) {
-        if (!silent) {
-          setCloudNotice(error.message);
-        }
-        return { data: null, error };
-      }
-
-      if (!data?.payload) {
-        setCloudBackupUpdatedAt("");
-        if (!silent) {
-          setCloudNotice("雲端目前沒有備份。");
-        }
-        return { data: null, error: null };
-      }
-
-      setCloudBackupUpdatedAt(data.updated_at || "");
-
-      if (applyPayload) {
-        transitionApply(data.payload, { markDirty: false });
-        setCloudSyncStatus("synced");
-        setCloudNotice("已從雲端還原最近備份。");
-      } else if (!silent) {
-        setCloudNotice(`已找到最近備份（${formatTimestamp(data.updated_at)}）。`);
-      }
-
-      return { data, error: null };
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error("讀取雲端備份失敗。");
-      if (!silent) {
-        setCloudNotice(normalizedError.message);
-      }
-      return { data: null, error: normalizedError };
-    } finally {
-      setIsCloudBackupLoading(false);
-    }
-  };
-
-  const syncScenarioToCloud = async (payloadOverride, options = {}) => {
-    const safePayload = resolveSyncPayload(payloadOverride, scenario);
-    const { silent = false } = options;
-    const attemptAt = new Date().toISOString();
-    setSessionMeta(writeSessionMeta({ lastSyncAttemptAt: attemptAt }));
-    if (!supabaseReady) {
-      setCloudNotice(getSupabaseConfigHint());
-      return { error: new Error(getSupabaseConfigHint()) };
-    }
-    if (cloudSetupState !== "ready") {
-      setCloudNotice(cloudSetupMessage);
-      return { error: new Error(cloudSetupMessage) };
-    }
-    if (isOffline) {
-      setCloudSyncStatus("pending");
-      if (!silent) {
-        setCloudNotice("目前離線，這次變更尚未同步；恢復連線後會自動再試同步。");
-      }
-      return { error: new Error("offline") };
-    }
-    setCloudSyncStatus("syncing");
-    try {
-      const { data, error } = await withTimeout(
-        upsertCloudBackup({
-          payload: safePayload,
-        }),
-        12000,
-        "同步雲端備份逾時，請確認網路後再試。",
-      );
-      if (error) {
-        setCloudSyncStatus("pending");
-        setCloudNotice(error.message);
-        return { error };
-      }
-      let pendingStillMatchesSyncedPayload = true;
-      if (typeof window !== "undefined" && window.localStorage) {
-        const pendingCloudSync = readPendingCloudSync(window.localStorage);
-        pendingStillMatchesSyncedPayload = doesPendingCloudSyncMatchPayload(
-          pendingCloudSync,
-          safePayload,
-        );
-        if (pendingStillMatchesSyncedPayload) {
-          clearPendingCloudSync(window.localStorage);
-        }
-      }
-      hasPendingCloudSyncRef.current = !pendingStillMatchesSyncedPayload;
-      setCloudBackupUpdatedAt(data?.updated_at || new Date().toISOString());
-      setCloudSyncStatus(pendingStillMatchesSyncedPayload ? "synced" : "pending");
-      setSessionMeta(
-        writeSessionMeta({ lastSyncedAt: new Date().toISOString(), lastSyncAttemptAt: attemptAt }),
-      );
-      setCloudNotice("目前內容已同步到雲端備份。");
-      return { error: null };
-    } catch (error) {
-      setCloudSyncStatus("pending");
-      const normalizedError = error instanceof Error ? error : new Error("同步雲端備份失敗。");
-      setCloudNotice(normalizedError.message);
-      return { error: normalizedError };
-    }
-  };
-
   const focusCompositionMonth = (monthKey) => {
     setSelectedMonthKey(monthKey);
     if (compositionChartRef.current) {
@@ -3899,16 +3950,6 @@ export default function PersonalFinanceCashflowSimulator() {
   const mainGridClassName =
     "flowra-main-grid grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,430px)_minmax(0,1fr)] xl:items-start";
   const inputGridClassName = "grid grid-cols-1 gap-3 sm:grid-cols-2";
-  const cloudSetupMessage =
-    cloudSetupState === "ready"
-      ? "雲端備份已就緒。"
-      : cloudSetupState === "checking"
-        ? "正在檢查雲端備份狀態。"
-        : cloudSetupState === "missing"
-          ? "雲端備份目前暫時不可用。"
-          : cloudSetupState === "error"
-            ? "雲端備份狀態檢查失敗。"
-            : getSupabaseConfigHint();
   const cloudFeaturesEnabled = cloudAuthState === "authenticated" && cloudSetupState === "ready";
   const cloudStatusLine = formatAutoSyncStatus({
     cloudAuthState,
