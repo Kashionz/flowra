@@ -17,6 +17,7 @@ import {
   ChartTooltipCard,
 } from "./components/ui/chart.jsx";
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
+import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import {
   addMonths,
@@ -1733,7 +1734,16 @@ function JpyExchangeRateBadge({
     const updateCoords = () => {
       if (!buttonRef.current) return;
       const rect = buttonRef.current.getBoundingClientRect();
-      setCoords({ top: rect.bottom + 6, left: rect.left });
+      // Clamp horizontally so the tooltip never escapes the viewport on
+      // narrow mobile widths. The tooltip is up to 300px wide; with an
+      // 8px breathing margin on each side, the rightmost left position
+      // is innerWidth - 300 - 8.
+      const tooltipMaxWidth = 300;
+      const safeLeft = Math.min(
+        Math.max(8, rect.left),
+        Math.max(8, window.innerWidth - tooltipMaxWidth - 8),
+      );
+      setCoords({ top: rect.bottom + 6, left: safeLeft });
     };
     updateCoords();
     window.addEventListener("scroll", updateCoords, true);
@@ -2451,8 +2461,10 @@ const styles = {
     background: "transparent",
     color: "#cbd5e1",
     borderRadius: "8px",
-    width: "18px",
-    minHeight: "32px",
+    // The visual icon stays small (16x10), but the hit area meets the
+    // 44px touch-target minimum so phone users can grip it reliably.
+    width: "44px",
+    minHeight: "44px",
     alignSelf: "stretch",
     padding: 0,
     cursor: "grab",
@@ -2799,7 +2811,16 @@ const styles = {
 };
 
 export default function PersonalFinanceCashflowSimulator() {
-  const [scenario, setScenario] = useState(() => createDefaultScenario());
+  const {
+    value: scenario,
+    setValue: setScenario,
+    replace: replaceScenario,
+    reset: resetScenarioHistory,
+    undo: undoScenario,
+    redo: redoScenario,
+    canUndo,
+    canRedo,
+  } = useUndoableState(() => createDefaultScenario());
   const [sessionMeta, setSessionMeta] = useState(() => readSessionMeta());
   const [, setCloudBackupUpdatedAt] = useState("");
   const [selectedMonthKey, setSelectedMonthKey] = useState("");
@@ -3013,19 +3034,46 @@ export default function PersonalFinanceCashflowSimulator() {
       if (event.key === "Escape") {
         setIsExportMenuOpen(false);
       }
+      // Cmd/Ctrl+Z → undo, Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo.
+      // Skip when the user is composing CJK input or has a native
+      // contenteditable focused; <input> / <textarea> already get their
+      // own per-field undo and we don't want to trample on it.
+      if (event.isComposing) return;
+      const target = event.target;
+      const insideEditable =
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (insideEditable) return;
+      const meta = event.metaKey || event.ctrlKey;
+      if (!meta) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoScenario();
+      } else if ((key === "z" && event.shiftKey) || key === "y") {
+        event.preventDefault();
+        redoScenario();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [undoScenario, redoScenario]);
 
   useEffect(() => {
     if (!isExportMenuOpen || typeof window === "undefined") return undefined;
     const update = () => {
       if (!exportTriggerRef.current) return;
       const rect = exportTriggerRef.current.getBoundingClientRect();
+      // The dropdown is min 220px wide; on narrow mobile the trigger
+      // sits near the left edge so right-anchoring would push the menu
+      // off-screen. Clamp the right offset so we leave at least 8px
+      // breathing room on the left.
+      const menuMinWidth = 220;
+      const idealRight = window.innerWidth - rect.right;
+      const maxRight = Math.max(8, window.innerWidth - menuMinWidth - 8);
       setExportMenuCoords({
         top: rect.bottom + 8,
-        right: window.innerWidth - rect.right,
+        right: Math.max(8, Math.min(idealRight, maxRight)),
       });
     };
     update();
@@ -3173,10 +3221,38 @@ export default function PersonalFinanceCashflowSimulator() {
     return { minBalance, finalBalance, totalIncome, totalExpense, totalInstallmentInterest };
   }, [rows, installmentRows]);
 
+  const isScenarioEmpty = useMemo(() => {
+    const b = scenario.basics;
+    return (
+      n(b.startingTwd) === 0 &&
+      n(b.jpyCash) === 0 &&
+      n(b.jpyCashTwd) === 0 &&
+      n(b.monthlySalary) === 0 &&
+      n(b.monthlySubsidy) === 0 &&
+      n(b.monthlyRent) === 0 &&
+      n(b.monthlyLivingCost) === 0 &&
+      n(b.monthlyStudentLoan) === 0 &&
+      scenario.oneTimeItems.length === 0 &&
+      scenario.installments.length === 0
+    );
+  }, [scenario]);
+
   const transitionApply = (nextScenario, options = {}) => {
     skipNextScenarioDirtyRef.current = options.markDirty === false;
-    setScenario(migrateLegacyScenario(nextScenario));
+    const migrated = migrateLegacyScenario(nextScenario);
+    // Authoritative loads (mount hydration, cloud refresh) wipe the
+    // history; user-initiated replacements (import, template load) push
+    // the prior value so Undo / Redo still works.
+    if (options.markDirty === false) {
+      resetScenarioHistory(migrated);
+    } else {
+      replaceScenario(migrated);
+    }
     setSelectedMonthKey("");
+  };
+
+  const loadTemplate = (templateKey) => {
+    transitionApply(createTemplateScenario(templateKey));
   };
 
   const patchMeta = (patch) => {
@@ -3329,6 +3405,26 @@ export default function PersonalFinanceCashflowSimulator() {
         installments: arrayMove(current.installments, oldIndex, newIndex),
       });
     });
+  };
+
+  const cloneScenarioToFile = () => {
+    const cloned = cloneScenario(scenario, {
+      meta: {
+        ...scenario.meta,
+        name: `${scenario.meta.name || RENAMED_SCENARIO_NAME} 副本`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    const blob = new Blob([JSON.stringify(toPersistedScenario(cloned), null, 2)], {
+      type: "application/json",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${exportFileBase(cloned.meta.baseMonth)}-copy.json`;
+    anchor.click();
+    window.URL.revokeObjectURL(url);
   };
 
   const exportJson = () => {
@@ -3814,6 +3910,37 @@ export default function PersonalFinanceCashflowSimulator() {
             </div>
           </div>
         </div>
+
+        {isScenarioEmpty ? (
+          <InteractiveSurface
+            as="section"
+            className="flowra-no-print flowra-no-report-export"
+            style={{
+              ...styles.card,
+              padding: "20px 22px",
+              marginBottom: "20px",
+              border: "1px dashed #cbd5e1",
+              background: "#f8fafc",
+            }}
+            hoverClassName=""
+          >
+            <h2 style={{ ...styles.cardTitle, margin: "0 0 8px" }}>從這裡開始</h2>
+            <p style={{ ...styles.subtitle, margin: "0 0 14px" }}>
+              在「試算設定」填入手上現金與每月薪水就會立即看到試算，或先載入一個範例情境再調整。
+            </p>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <InteractiveButton onClick={() => loadTemplate("graduate")} variant="smallButton">
+                載入｜社會新鮮人
+              </InteractiveButton>
+              <InteractiveButton onClick={() => loadTemplate("family")} variant="smallButton">
+                載入｜有小孩家庭
+              </InteractiveButton>
+              <InteractiveButton onClick={() => loadTemplate("freelancer")} variant="smallButton">
+                載入｜自由工作者
+              </InteractiveButton>
+            </div>
+          </InteractiveSurface>
+        ) : null}
 
         <div style={styles.summaryGrid}>
           <StatCard
@@ -4479,6 +4606,25 @@ export default function PersonalFinanceCashflowSimulator() {
               <div
                 style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}
               >
+                <InteractiveButton
+                  onClick={undoScenario}
+                  disabled={!canUndo}
+                  aria-label="復原（Cmd/Ctrl+Z）"
+                  title="復原（Cmd/Ctrl+Z）"
+                >
+                  ← 復原
+                </InteractiveButton>
+                <InteractiveButton
+                  onClick={redoScenario}
+                  disabled={!canRedo}
+                  aria-label="取消復原（Cmd/Ctrl+Shift+Z）"
+                  title="取消復原（Cmd/Ctrl+Shift+Z）"
+                >
+                  取消復原 →
+                </InteractiveButton>
+                <InteractiveButton onClick={() => cloneScenarioToFile()}>
+                  複製情境
+                </InteractiveButton>
                 <InteractiveButton
                   onClick={() => syncScenarioToCloud()}
                   disabled={!cloudFeaturesEnabled}
