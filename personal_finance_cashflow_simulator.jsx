@@ -20,6 +20,8 @@ import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { useCloudSync } from "./hooks/useCloudSync.js";
 import { clampDropdownRight, clampTooltipLeft } from "./lib/clampViewport.js";
+import { DATA_MANAGEMENT_ACTIONS, getImportReplaceNotice } from "./lib/dataManagementOptions.js";
+import { makeItemId, syncItemIdSequenceFromScenario } from "./lib/itemIds.js";
 import { describeHydrationDecision } from "./lib/hydrationNotice.js";
 import { computeImportDiff } from "./lib/importDiff.js";
 import { isScenarioEmpty as isScenarioEmptyHelper, readInitialBoot } from "./lib/initialBoot.js";
@@ -29,6 +31,7 @@ import {
   buildProjection,
   clampMonthIndex,
   currency,
+  decorateInstallments,
   currentBaseMonth,
   exportFileBase,
   formatMonthLabel,
@@ -39,7 +42,11 @@ import {
   reserveTarget,
   resolveJpyCashTwd,
 } from "./lib/finance.js";
-import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
+import {
+  getNumericInputDisplayValue,
+  normalizeNumericInput,
+  stepNumericValue,
+} from "./lib/numberField.js";
 import {
   FALLBACK_JPY_TO_TWD_RATE,
   fetchJpyToTwdRate,
@@ -84,11 +91,6 @@ const SESSION_META_DEFAULT = {
   lastSyncedAt: "",
   lastSyncAttemptAt: "",
 };
-let nextId = 1;
-function makeId(prefix = "id") {
-  nextId += 1;
-  return `${prefix}-${nextId}`;
-}
 
 function normalizeLegacyScenarioName(value) {
   const text = String(value || "").trim();
@@ -131,7 +133,7 @@ function createTemplateScenario(templateKey = DEFAULT_TEMPLATE_KEY) {
       monthsToProject: template.basics.monthsToProject,
     },
     oneTimeItems: template.oneTimeItems.map((item) => ({
-      id: makeId("one-time"),
+      id: makeItemId("one-time"),
       name: item.name,
       amount: item.amount,
       month: addMonths(baseMonth, item.monthOffset),
@@ -139,7 +141,7 @@ function createTemplateScenario(templateKey = DEFAULT_TEMPLATE_KEY) {
       category: item.category,
     })),
     installments: template.installments.map((item) => ({
-      id: makeId("installment"),
+      id: makeItemId("installment"),
       name: item.name,
       principal: item.principal,
       apr: item.apr,
@@ -192,7 +194,7 @@ function migrateLegacyScenario(raw) {
       },
       oneTimeItems: Array.isArray(raw.oneTimeItems)
         ? raw.oneTimeItems.map((item) => ({
-            id: item.id || makeId("one-time"),
+            id: item.id || makeItemId("one-time"),
             name: item.name || "未命名項目",
             amount: n(item.amount),
             month: item.month || addMonths(raw.meta?.baseMonth || template.meta.baseMonth, 0),
@@ -202,7 +204,7 @@ function migrateLegacyScenario(raw) {
         : [],
       installments: Array.isArray(raw.installments)
         ? raw.installments.map((item) => ({
-            id: item.id || makeId("installment"),
+            id: item.id || makeItemId("installment"),
             name: item.name || "未命名分期",
             principal: n(item.principal),
             apr: n(item.apr),
@@ -243,7 +245,7 @@ function migrateLegacyScenario(raw) {
     },
     oneTimeItems: Array.isArray(raw.oneTimeItems)
       ? raw.oneTimeItems.map((item) => ({
-          id: item.id || makeId("one-time"),
+          id: item.id || makeItemId("one-time"),
           name: item.name || "舊版一次項目",
           amount: n(item.amount),
           month: addMonths(baseMonth, clampMonthIndex(item.month)),
@@ -253,7 +255,7 @@ function migrateLegacyScenario(raw) {
       : [],
     installments: Array.isArray(raw.installments || raw.installmentRows)
       ? (raw.installments || raw.installmentRows).map((item) => ({
-          id: item.id || makeId("installment"),
+          id: item.id || makeItemId("installment"),
           name: item.name || "舊版分期",
           principal: n(item.principal),
           apr: n(item.apr),
@@ -469,7 +471,7 @@ function parseInstallmentLines(text, baseMonth) {
     }
 
     parsed.push({
-      id: makeId("installment"),
+      id: makeItemId("installment"),
       name,
       principal,
       apr,
@@ -1612,7 +1614,7 @@ function Field({
             type="number"
             min={min}
             step={step}
-            value={value}
+            value={getNumericInputDisplayValue(value, isFocused)}
             disabled={disabled}
             onChange={(event) =>
               onChange(normalizeNumericInput(event.target.value, { min, precision }))
@@ -2790,10 +2792,6 @@ export default function PersonalFinanceCashflowSimulator() {
     setValue: setScenario,
     replace: replaceScenario,
     reset: resetScenarioHistory,
-    undo: undoScenario,
-    redo: redoScenario,
-    canUndo,
-    canRedo,
   } = useUndoableState(() => initialBoot.localDraft || createDefaultScenario());
   const [sessionMeta, setSessionMeta] = useState(() => initialBoot.sessionMeta);
   // The user's explicit month selection. The displayed month
@@ -2868,6 +2866,10 @@ export default function PersonalFinanceCashflowSimulator() {
     () => (Array.isArray(projectionResult) ? [] : projectionResult.installmentRows),
     [projectionResult],
   );
+  const editableInstallments = useMemo(
+    () => decorateInstallments(scenario.installments),
+    [scenario.installments],
+  );
   const generatedAt = useMemo(() => new Date(), []);
   const reportPeriodLabel = useMemo(() => {
     if (!rows.length) return `${formatMonthLabel(scenario.meta.baseMonth)} 起`;
@@ -2893,9 +2895,10 @@ export default function PersonalFinanceCashflowSimulator() {
     (nextScenario, options = {}) => {
       skipNextScenarioDirtyRef.current = options.markDirty === false;
       const migrated = migrateLegacyScenario(nextScenario);
+      syncItemIdSequenceFromScenario(migrated);
       // Authoritative loads (mount hydration, cloud refresh) wipe the
-      // history; user-initiated replacements (import, template load)
-      // push the prior value so Undo / Redo still works.
+      // history; user-initiated replacements still flow through the
+      // same replace path so local draft persistence stays consistent.
       if (options.markDirty === false) {
         resetScenarioHistory(migrated);
       } else {
@@ -2961,6 +2964,10 @@ export default function PersonalFinanceCashflowSimulator() {
     if (typeof window === "undefined") return;
     writeSessionMeta({ lastOpenedAt: new Date().toISOString() });
   }, []);
+
+  useEffect(() => {
+    syncItemIdSequenceFromScenario(scenario);
+  }, [scenario]);
 
   // selectedMonthKey is purely derived: user pick wins, otherwise the
   // first projected row's month. No effect needed.
@@ -3068,30 +3075,10 @@ export default function PersonalFinanceCashflowSimulator() {
       if (event.key === "Escape") {
         setIsExportMenuOpen(false);
       }
-      // Cmd/Ctrl+Z → undo, Cmd/Ctrl+Shift+Z (or Cmd/Ctrl+Y) → redo.
-      // Skip when the user is composing CJK input or has a native
-      // contenteditable focused; <input> / <textarea> already get their
-      // own per-field undo and we don't want to trample on it.
-      if (event.isComposing) return;
-      const target = event.target;
-      const insideEditable =
-        target instanceof HTMLElement &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
-      if (insideEditable) return;
-      const meta = event.metaKey || event.ctrlKey;
-      if (!meta) return;
-      const key = event.key.toLowerCase();
-      if (key === "z" && !event.shiftKey) {
-        event.preventDefault();
-        undoScenario();
-      } else if ((key === "z" && event.shiftKey) || key === "y") {
-        event.preventDefault();
-        redoScenario();
-      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [undoScenario, redoScenario]);
+  }, []);
 
   useEffect(() => {
     if (!isExportMenuOpen || typeof window === "undefined") return undefined;
@@ -3240,7 +3227,7 @@ export default function PersonalFinanceCashflowSimulator() {
   };
 
   const addOneTimeItem = () => {
-    const id = makeId("one-time");
+    const id = makeItemId("one-time");
     setScenario((current) =>
       cloneScenario(current, {
         oneTimeItems: [
@@ -3261,7 +3248,7 @@ export default function PersonalFinanceCashflowSimulator() {
   };
 
   const addInstallment = () => {
-    const id = makeId("installment");
+    const id = makeItemId("installment");
     setScenario((current) =>
       cloneScenario(current, {
         installments: [
@@ -3287,6 +3274,11 @@ export default function PersonalFinanceCashflowSimulator() {
         oneTimeItems: current.oneTimeItems.filter((item) => item.id !== id),
       }),
     );
+    setOpenOneTimeItemIds((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   };
 
   const removeInstallment = (id) => {
@@ -3295,13 +3287,18 @@ export default function PersonalFinanceCashflowSimulator() {
         installments: current.installments.filter((item) => item.id !== id),
       }),
     );
+    setOpenInstallmentItemIds((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   };
 
   const duplicateOneTimeItem = (id) => {
     setScenario((current) => {
       const target = current.oneTimeItems.find((item) => item.id === id);
       if (!target) return current;
-      const duplicate = { ...target, id: makeId("one-time"), name: `${target.name} 副本` };
+      const duplicate = { ...target, id: makeItemId("one-time"), name: `${target.name} 副本` };
       return cloneScenario(current, { oneTimeItems: [...current.oneTimeItems, duplicate] });
     });
   };
@@ -3310,7 +3307,11 @@ export default function PersonalFinanceCashflowSimulator() {
     setScenario((current) => {
       const target = current.installments.find((item) => item.id === id);
       if (!target) return current;
-      const duplicate = { ...target, id: makeId("installment"), name: `${target.name} 副本` };
+      const duplicate = {
+        ...target,
+        id: makeItemId("installment"),
+        name: `${target.name} 副本`,
+      };
       return cloneScenario(current, { installments: [...current.installments, duplicate] });
     });
   };
@@ -3361,26 +3362,6 @@ export default function PersonalFinanceCashflowSimulator() {
         installments: arrayMove(current.installments, oldIndex, newIndex),
       });
     });
-  };
-
-  const cloneScenarioToFile = () => {
-    const cloned = cloneScenario(scenario, {
-      meta: {
-        ...scenario.meta,
-        name: `${scenario.meta.name || RENAMED_SCENARIO_NAME} 副本`,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    });
-    const blob = new Blob([JSON.stringify(toPersistedScenario(cloned), null, 2)], {
-      type: "application/json",
-    });
-    const url = window.URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${exportFileBase(cloned.meta.baseMonth)}-copy.json`;
-    anchor.click();
-    window.URL.revokeObjectURL(url);
   };
 
   const exportJson = () => {
@@ -4257,7 +4238,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 >
                   <Chevron open={isInstallmentsOpen} />
                   <span>分期付款</span>
-                  <CountPill count={installmentRows.length} />
+                  <CountPill count={editableInstallments.length} />
                 </button>
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                   <InteractiveButton
@@ -4277,7 +4258,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 </div>
               </div>
               <Collapsible open={isInstallmentsOpen}>
-                {installmentRows.length === 0 ? (
+                {editableInstallments.length === 0 ? (
                   <div
                     style={{
                       ...styles.mutedBox,
@@ -4296,10 +4277,10 @@ export default function PersonalFinanceCashflowSimulator() {
                     onDragEnd={handleInstallmentDragEnd}
                   >
                     <SortableContext
-                      items={installmentRows.map((item) => item.id)}
+                      items={editableInstallments.map((item) => item.id)}
                       strategy={verticalListSortingStrategy}
                     >
-                      {installmentRows.map((item) => {
+                      {editableInstallments.map((item) => {
                         const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
                         const endMonth = addMonths(item.startMonth, item.terms - 1);
                         return (
@@ -4489,110 +4470,115 @@ export default function PersonalFinanceCashflowSimulator() {
               <div
                 style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}
               >
-                <InteractiveButton
-                  onClick={undoScenario}
-                  disabled={!canUndo}
-                  aria-label="復原（Cmd/Ctrl+Z）"
-                  title="復原（Cmd/Ctrl+Z）"
-                >
-                  ← 復原
-                </InteractiveButton>
-                <InteractiveButton
-                  onClick={redoScenario}
-                  disabled={!canRedo}
-                  aria-label="取消復原（Cmd/Ctrl+Shift+Z）"
-                  title="取消復原（Cmd/Ctrl+Shift+Z）"
-                >
-                  取消復原 →
-                </InteractiveButton>
-                <InteractiveButton onClick={() => cloneScenarioToFile()}>
-                  複製情境
-                </InteractiveButton>
-                <InteractiveButton
-                  onClick={() => syncScenarioToCloud()}
-                  disabled={!cloudFeaturesEnabled}
-                >
-                  同步備份
-                </InteractiveButton>
-                <InteractiveButton
-                  onClick={() => refreshCloudBackup({ applyPayload: true })}
-                  disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
-                >
-                  {isCloudBackupLoading ? "還原中..." : "還原最近備份"}
-                </InteractiveButton>
-                <InteractiveButton onClick={() => fileInputRef.current?.click()}>
-                  匯入資料
-                </InteractiveButton>
-                <div ref={exportTriggerRef} style={{ position: "relative" }}>
-                  <InteractiveButton
-                    onClick={() => setIsExportMenuOpen((value) => !value)}
-                    aria-expanded={isExportMenuOpen}
-                  >
-                    匯出
-                  </InteractiveButton>
-                  {isExportMenuOpen && typeof document !== "undefined"
-                    ? createPortal(
-                        <FloatingSurface
-                          data-export-menu="true"
-                          style={{
-                            ...styles.dropdownMenu,
-                            position: "fixed",
-                            top: exportMenuCoords.top,
-                            right: exportMenuCoords.right,
-                            zIndex: 1000,
-                          }}
-                          motionClassName="flowra-surface-enter"
+                {DATA_MANAGEMENT_ACTIONS.map((action) => {
+                  if (action.key === "syncBackup") {
+                    return (
+                      <InteractiveButton
+                        key={action.key}
+                        onClick={() => syncScenarioToCloud()}
+                        disabled={!cloudFeaturesEnabled}
+                      >
+                        {action.label}
+                      </InteractiveButton>
+                    );
+                  }
+                  if (action.key === "importData") {
+                    return (
+                      <InteractiveButton
+                        key={action.key}
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        {action.label}
+                      </InteractiveButton>
+                    );
+                  }
+                  if (action.key === "restoreBackup") {
+                    return (
+                      <InteractiveButton
+                        key={action.key}
+                        onClick={() => refreshCloudBackup({ applyPayload: true })}
+                        disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
+                      >
+                        {isCloudBackupLoading ? "還原中..." : action.label}
+                      </InteractiveButton>
+                    );
+                  }
+                  if (action.key === "exportData") {
+                    return (
+                      <div key={action.key} ref={exportTriggerRef} style={{ position: "relative" }}>
+                        <InteractiveButton
+                          onClick={() => setIsExportMenuOpen((value) => !value)}
+                          aria-expanded={isExportMenuOpen}
                         >
-                          <InteractiveButton
-                            variant="dropdownItem"
-                            onClick={() => {
-                              setIsExportMenuOpen(false);
-                              exportPng();
-                            }}
-                          >
-                            下載整頁圖片
-                          </InteractiveButton>
-                          <InteractiveButton
-                            variant="dropdownItem"
-                            onClick={() => {
-                              setIsExportMenuOpen(false);
-                              exportPdf();
-                            }}
-                          >
-                            下載報表
-                          </InteractiveButton>
-                          <InteractiveButton
-                            variant="dropdownItem"
-                            onClick={() => {
-                              setIsExportMenuOpen(false);
-                              exportExcel();
-                            }}
-                          >
-                            下載表格檔
-                          </InteractiveButton>
-                          <InteractiveButton
-                            variant="dropdownItem"
-                            onClick={() => {
-                              setIsExportMenuOpen(false);
-                              exportJson();
-                            }}
-                          >
-                            下載完整資料
-                          </InteractiveButton>
-                          <InteractiveButton
-                            variant="dropdownItem"
-                            onClick={() => {
-                              setIsExportMenuOpen(false);
-                              printReport();
-                            }}
-                          >
-                            列印
-                          </InteractiveButton>
-                        </FloatingSurface>,
-                        document.body,
-                      )
-                    : null}
-                </div>
+                          {action.label}
+                        </InteractiveButton>
+                        {isExportMenuOpen && typeof document !== "undefined"
+                          ? createPortal(
+                              <FloatingSurface
+                                data-export-menu="true"
+                                style={{
+                                  ...styles.dropdownMenu,
+                                  position: "fixed",
+                                  top: exportMenuCoords.top,
+                                  right: exportMenuCoords.right,
+                                  zIndex: 1000,
+                                }}
+                                motionClassName="flowra-surface-enter"
+                              >
+                                <InteractiveButton
+                                  variant="dropdownItem"
+                                  onClick={() => {
+                                    setIsExportMenuOpen(false);
+                                    exportPng();
+                                  }}
+                                >
+                                  下載整頁圖片
+                                </InteractiveButton>
+                                <InteractiveButton
+                                  variant="dropdownItem"
+                                  onClick={() => {
+                                    setIsExportMenuOpen(false);
+                                    exportPdf();
+                                  }}
+                                >
+                                  下載報表
+                                </InteractiveButton>
+                                <InteractiveButton
+                                  variant="dropdownItem"
+                                  onClick={() => {
+                                    setIsExportMenuOpen(false);
+                                    exportExcel();
+                                  }}
+                                >
+                                  下載表格檔
+                                </InteractiveButton>
+                                <InteractiveButton
+                                  variant="dropdownItem"
+                                  onClick={() => {
+                                    setIsExportMenuOpen(false);
+                                    exportJson();
+                                  }}
+                                >
+                                  下載完整資料
+                                </InteractiveButton>
+                                <InteractiveButton
+                                  variant="dropdownItem"
+                                  onClick={() => {
+                                    setIsExportMenuOpen(false);
+                                    printReport();
+                                  }}
+                                >
+                                  列印
+                                </InteractiveButton>
+                              </FloatingSurface>,
+                              document.body,
+                            )
+                          : null}
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
               </div>
               <input
                 ref={fileInputRef}
@@ -5159,7 +5145,7 @@ export default function PersonalFinanceCashflowSimulator() {
                       fontSize: "11px",
                     }}
                   >
-                    匯入會完全取代目前情境，可按 Cmd/Ctrl+Z 復原。
+                    {getImportReplaceNotice()}
                   </p>
                 </>
               )}
