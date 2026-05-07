@@ -52,17 +52,13 @@ export default [
       "no-empty": ["error", { allowEmptyCatch: true }],
       "no-irregular-whitespace": ["error", { skipStrings: true, skipJSXText: true }],
       "react-hooks/exhaustive-deps": "warn",
-      // Plugin v7 strict rules still fire on the legitimate but
-      // entangled cloud-sync helpers — `refreshCloudBackup`,
-      // `syncScenarioToCloud`, and `transitionApply` are declared after
-      // the effects that close over them. Fixing that requires lifting
-      // them above the effects (or extracting them into a custom hook),
-      // which is the next refactor. Until then, keep the rule off.
-      "react-hooks/immutability": "off",
+      // The v7 strict rule discourages setState-in-effect, but mount-time
+      // localStorage hydration and "default the selected month to the
+      // first row" are legitimate patterns where there's no external
+      // subscription to hook into. Keep this rule off; the other v7
+      // strict rules (immutability, refs, preserve-manual-memoization,
+      // unsupported-syntax) stay on by default.
       "react-hooks/set-state-in-effect": "off",
-      "react-hooks/refs": "off",
-      "react-hooks/preserve-manual-memoization": "off",
-      "react-hooks/unsupported-syntax": "off",
     },
   },
   {
