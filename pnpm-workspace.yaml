@@ -1,11 +1,11 @@
 allowBuilds:
-  '@parcel/watcher': true
+  "@parcel/watcher": true
   core-js: true
   esbuild: true
   msw: true
 
 onlyBuiltDependencies:
-  - '@parcel/watcher'
+  - "@parcel/watcher"
   - core-js
   - esbuild
   - msw
