@@ -2844,6 +2844,8 @@ export default function PersonalFinanceCashflowSimulator() {
   const [isCloudBackupLoading, setIsCloudBackupLoading] = useState(false);
   const [isCloudHydrated, setIsCloudHydrated] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [hydrationNotice, setHydrationNotice] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
   const [exportMenuCoords, setExportMenuCoords] = useState({ top: 0, right: 0 });
   const exportTriggerRef = useRef(null);
   const [isPreparingPdf, setIsPreparingPdf] = useState(false);
@@ -2956,6 +2958,16 @@ export default function PersonalFinanceCashflowSimulator() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // Hydration banner auto-dismiss after 8 seconds. The banner stays
+  // permanent for the cloud-overrode-local case because that's the
+  // path where the user might want to restore the discarded draft.
+  useEffect(() => {
+    if (!hydrationNotice) return undefined;
+    if (hydrationNotice.source === "cloud" && hydrationNotice.savedDraft) return undefined;
+    const timer = setTimeout(() => setHydrationNotice(null), 8000);
+    return () => clearTimeout(timer);
+  }, [hydrationNotice]);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -3201,6 +3213,31 @@ export default function PersonalFinanceCashflowSimulator() {
         }
         hasPendingCloudSyncRef.current = false;
         setCloudSyncStatus("synced");
+
+        // If there was a local draft we just dropped, surface a banner so
+        // the user knows what happened and can restore the local copy.
+        if (localDraft) {
+          setHydrationNotice({
+            source: "cloud",
+            cloudUpdatedAt: cloudBackup?.updated_at || null,
+            pendingUpdatedAt: pendingUpdatedAtAtMountRef.current,
+            savedDraft: localDraft,
+          });
+        }
+      } else if (
+        hydration.source === "draft" &&
+        cloudBackup?.payload &&
+        pendingExistedAtMountRef.current
+      ) {
+        // We kept the local draft because its pending timestamp was newer
+        // than the cloud's. Worth surfacing so the user knows their cloud
+        // backup is currently behind.
+        setHydrationNotice({
+          source: "draft",
+          cloudUpdatedAt: cloudBackup?.updated_at || null,
+          pendingUpdatedAt: pendingUpdatedAtAtMountRef.current,
+          savedDraft: null,
+        });
       }
 
       setIsCloudHydrated(true);
@@ -3571,15 +3608,31 @@ export default function PersonalFinanceCashflowSimulator() {
       const parsed = JSON.parse(raw);
       const validation = validateImportedScenario(parsed);
       if (!validation.ok) {
-        window.alert(validation.message);
+        setImportPreview({ status: "error", message: validation.message, fileName: file.name });
         event.target.value = "";
         return;
       }
-      transitionApply(parsed);
+      const incoming = migrateLegacyScenario(parsed);
+      setImportPreview({
+        status: "ready",
+        fileName: file.name,
+        mode: validation.mode || "current",
+        incoming,
+      });
     } catch (error) {
-      window.alert("資料匯入失敗，請確認檔案格式正確。");
+      setImportPreview({
+        status: "error",
+        message: "資料匯入失敗，請確認檔案格式正確。",
+        fileName: file?.name || "",
+      });
     }
     event.target.value = "";
+  };
+
+  const confirmImport = () => {
+    if (!importPreview || importPreview.status !== "ready") return;
+    transitionApply(importPreview.incoming);
+    setImportPreview(null);
   };
 
   const signInWithGoogleHandler = async () => {
@@ -3971,6 +4024,63 @@ export default function PersonalFinanceCashflowSimulator() {
                 依目前設定，這段期間最低會剩 {maskCurrency(summary.minBalance, hiddenAmounts)}
                 。建議降低生活開銷、延後支出、增加收入或調整分期期數。
               </div>
+            </div>
+          </div>
+        ) : null}
+
+        {hydrationNotice ? (
+          <div
+            className="flowra-no-print flowra-no-report-export"
+            style={{
+              marginBottom: "16px",
+              padding: "12px 16px",
+              borderRadius: "12px",
+              border: "1px solid #cbd5e1",
+              background: "#f8fafc",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "10px",
+              color: "#0f172a",
+              fontSize: "13px",
+            }}
+            role="status"
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 }}>
+              {hydrationNotice.source === "cloud" ? (
+                <>
+                  <strong>已採用雲端版本</strong>
+                  <span style={{ color: "#475569", fontSize: "12px" }}>
+                    雲端最後更新 {formatTimestamp(hydrationNotice.cloudUpdatedAt)}
+                    ；本機草稿已先保留供你還原。
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong>保留本機未同步編輯</strong>
+                  <span style={{ color: "#475569", fontSize: "12px" }}>
+                    你的本機版本（{formatTimestamp(hydrationNotice.pendingUpdatedAt)}）比雲端新，
+                    雲端會在下次同步時被覆蓋。
+                  </span>
+                </>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+              {hydrationNotice.source === "cloud" && hydrationNotice.savedDraft ? (
+                <InteractiveButton
+                  variant="smallButton"
+                  onClick={() => {
+                    transitionApply(hydrationNotice.savedDraft);
+                    setHydrationNotice(null);
+                  }}
+                >
+                  改用本機草稿
+                </InteractiveButton>
+              ) : null}
+              <InteractiveButton variant="smallButton" onClick={() => setHydrationNotice(null)}>
+                關閉
+              </InteractiveButton>
             </div>
           </div>
         ) : null}
@@ -5152,6 +5262,147 @@ export default function PersonalFinanceCashflowSimulator() {
                   ))}
                 </div>
               ) : null}
+            </FloatingSurface>
+          </div>
+        ) : null}
+
+        {importPreview ? (
+          <div
+            style={styles.modalBackdrop}
+            className="flowra-no-print"
+            onClick={() => setImportPreview(null)}
+          >
+            <FloatingSurface
+              style={styles.modalCard}
+              motionClassName="flowra-surface-enter"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  alignItems: "flex-start",
+                  marginBottom: "12px",
+                }}
+              >
+                <div>
+                  <h2 style={styles.cardTitle}>匯入資料預覽</h2>
+                  <p style={styles.metaText}>
+                    來源檔案：{importPreview.fileName || "—"}
+                    {importPreview.mode === "legacy" ? "（舊版資料，將自動升級）" : ""}
+                  </p>
+                </div>
+                <InteractiveButton onClick={() => setImportPreview(null)}>關閉</InteractiveButton>
+              </div>
+
+              {importPreview.status === "error" ? (
+                <div style={{ ...styles.alert, marginBottom: 0 }}>
+                  <strong>無法匯入</strong>
+                  <div>{importPreview.message}</div>
+                </div>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      ...styles.mutedBox,
+                      marginTop: 0,
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr",
+                      gap: "10px 16px",
+                      fontSize: "13px",
+                    }}
+                  >
+                    {[
+                      ["手上台幣", "startingTwd", "元"],
+                      ["日幣現金", "jpyCash", "円"],
+                      ["每月薪資", "monthlySalary", "元"],
+                      ["每月補貼", "monthlySubsidy", "元"],
+                      ["每月房租", "monthlyRent", "元"],
+                      ["每月生活費", "monthlyLivingCost", "元"],
+                      ["每月學貸", "monthlyStudentLoan", "元"],
+                      ["試算月數", "monthsToProject", "月"],
+                    ].map(([label, key, suffix]) => {
+                      const before = n(scenario.basics[key]);
+                      const after = n(importPreview.incoming.basics[key]);
+                      const changed = before !== after;
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "2px",
+                            padding: "6px 8px",
+                            borderRadius: "8px",
+                            background: changed ? "#fef9c3" : "transparent",
+                          }}
+                        >
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>{label}</span>
+                          <span
+                            style={{
+                              fontSize: "13px",
+                              fontWeight: 700,
+                              color: "#0f172a",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {currency(after)} {suffix}
+                          </span>
+                          {changed ? (
+                            <span style={{ fontSize: "11px", color: "#92400e" }}>
+                              （目前 {currency(before)}）
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: "12px",
+                      marginTop: "12px",
+                      fontSize: "13px",
+                      color: "#475569",
+                    }}
+                  >
+                    <span>
+                      一次收支：{importPreview.incoming.oneTimeItems.length} 筆 ／ 分期：
+                      {importPreview.incoming.installments.length} 筆
+                    </span>
+                    <span>
+                      （目前 {scenario.oneTimeItems.length} ／ {scenario.installments.length}）
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: "16px",
+                      display: "flex",
+                      gap: "8px",
+                      justifyContent: "flex-end",
+                    }}
+                  >
+                    <InteractiveButton onClick={() => setImportPreview(null)}>
+                      取消
+                    </InteractiveButton>
+                    <InteractiveButton variant="activePill" onClick={confirmImport}>
+                      確認取代
+                    </InteractiveButton>
+                  </div>
+                  <p
+                    style={{
+                      ...styles.metaText,
+                      marginTop: "10px",
+                      marginBottom: 0,
+                      fontSize: "11px",
+                    }}
+                  >
+                    匯入會完全取代目前情境，可按 Cmd/Ctrl+Z 復原。
+                  </p>
+                </>
+              )}
             </FloatingSurface>
           </div>
         ) : null}
