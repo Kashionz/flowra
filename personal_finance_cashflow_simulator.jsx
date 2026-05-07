@@ -1,9 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./styles/flowra.css";
-import { toPng } from "html-to-image";
-import { jsPDF } from "jspdf";
-import * as XLSX from "xlsx";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -3019,16 +3016,25 @@ export default function PersonalFinanceCashflowSimulator() {
   const readonlyShared = false;
   const supabaseReady = useMemo(() => isSupabaseConfigured(), []);
   const jpyExchangeRate = useJpyExchangeRate();
+  // useDeferredValue lets React drop intermediate scenarios when the user is
+  // typing fast, so buildProjection only re-runs once the input settles.
+  const deferredScenario = useDeferredValue(scenario);
   const effectiveJpyTwd = useMemo(
-    () => resolveJpyCashTwd(scenario.basics, jpyExchangeRate.rate),
-    [scenario.basics, jpyExchangeRate.rate],
+    () => resolveJpyCashTwd(deferredScenario.basics, jpyExchangeRate.rate),
+    [deferredScenario.basics, jpyExchangeRate.rate],
   );
   const projectionResult = useMemo(
-    () => buildProjection(scenario, jpyExchangeRate.rate),
-    [scenario, jpyExchangeRate.rate],
+    () => buildProjection(deferredScenario, jpyExchangeRate.rate),
+    [deferredScenario, jpyExchangeRate.rate],
   );
-  const rows = Array.isArray(projectionResult) ? projectionResult : projectionResult.rows;
-  const installmentRows = Array.isArray(projectionResult) ? [] : projectionResult.installmentRows;
+  const rows = useMemo(
+    () => (Array.isArray(projectionResult) ? projectionResult : projectionResult.rows),
+    [projectionResult],
+  );
+  const installmentRows = useMemo(
+    () => (Array.isArray(projectionResult) ? [] : projectionResult.installmentRows),
+    [projectionResult],
+  );
   const generatedAt = useMemo(() => new Date(), []);
   const reportPeriodLabel = useMemo(() => {
     if (!rows.length) return `${formatMonthLabel(scenario.meta.baseMonth)} 起`;
@@ -3494,7 +3500,8 @@ export default function PersonalFinanceCashflowSimulator() {
     window.URL.revokeObjectURL(url);
   };
 
-  const exportExcel = () => {
+  const exportExcel = async () => {
+    const XLSX = await import("xlsx");
     const sheet = XLSX.utils.json_to_sheet(
       rows.map((row) => ({
         月份: row.fullLabel,
@@ -3516,7 +3523,7 @@ export default function PersonalFinanceCashflowSimulator() {
     XLSX.writeFile(workbook, `${exportFileBase(scenario.meta.baseMonth)}.xlsx`);
   };
 
-  const captureNodeAsPng = async (node) => {
+  const captureNodeAsPng = async (node, toPng) => {
     // Wait two animation frames so the export-mode CSS (forced 1200px width,
     // overflow:visible, mobile→desktop) has applied before measuring.
     await new Promise((resolve) => window.requestAnimationFrame(resolve));
@@ -3545,7 +3552,8 @@ export default function PersonalFinanceCashflowSimulator() {
     if (!reportRef.current) return;
     try {
       setIsPreparingReportExport(true);
-      const dataUrl = await captureNodeAsPng(reportRef.current);
+      const { toPng } = await import("html-to-image");
+      const dataUrl = await captureNodeAsPng(reportRef.current, toPng);
       const anchor = document.createElement("a");
       anchor.href = dataUrl;
       anchor.download = `${exportFileBase(scenario.meta.baseMonth)}.png`;
@@ -3561,7 +3569,8 @@ export default function PersonalFinanceCashflowSimulator() {
     if (!targetRef?.current) return;
     try {
       targetRef.current.classList.add("flowra-capture-export");
-      const dataUrl = await captureNodeAsPng(targetRef.current);
+      const { toPng } = await import("html-to-image");
+      const dataUrl = await captureNodeAsPng(targetRef.current, toPng);
       const anchor = document.createElement("a");
       anchor.href = dataUrl;
       anchor.download = `${exportFileBase(scenario.meta.baseMonth)}-${fileSuffix}.png`;
@@ -3577,7 +3586,8 @@ export default function PersonalFinanceCashflowSimulator() {
     if (!reportRef.current) return;
     try {
       setIsPreparingPdf(true);
-      const dataUrl = await captureNodeAsPng(reportRef.current);
+      const [{ toPng }, { jsPDF }] = await Promise.all([import("html-to-image"), import("jspdf")]);
+      const dataUrl = await captureNodeAsPng(reportRef.current, toPng);
       const pdf = new jsPDF({ orientation: "p", unit: "mm", format: "a4" });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
