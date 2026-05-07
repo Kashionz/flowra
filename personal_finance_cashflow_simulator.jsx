@@ -19,6 +19,10 @@ import {
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { useCloudSync } from "./hooks/useCloudSync.js";
+import { clampDropdownRight, clampTooltipLeft } from "./lib/clampViewport.js";
+import { describeHydrationDecision } from "./lib/hydrationNotice.js";
+import { computeImportDiff } from "./lib/importDiff.js";
+import { isScenarioEmpty as isScenarioEmptyHelper, readInitialBoot } from "./lib/initialBoot.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import {
   addMonths,
@@ -328,28 +332,6 @@ function writeSessionMeta(patch) {
     window.localStorage.setItem(STORAGE_SESSION_META_KEY, JSON.stringify(next));
   }
   return next;
-}
-
-/**
- * Reads everything we need from localStorage in one shot during the
- * very first render, so each downstream hook (`useUndoableState`,
- * `useState`, `useReducer`, `useRef`) can be initialised lazily from
- * a consistent snapshot. Doing this once here means we don't have to
- * synchronously setState inside a mount effect later.
- */
-function readInitialBoot() {
-  if (typeof window === "undefined") {
-    return {
-      localDraft: null,
-      pendingCloudSync: null,
-      sessionMeta: { lastOpenedAt: "", lastSyncedAt: "", lastSyncAttemptAt: "" },
-    };
-  }
-  return {
-    localDraft: readDraftScenario(window.localStorage),
-    pendingCloudSync: readPendingCloudSync(window.localStorage),
-    sessionMeta: readSessionMeta(),
-  };
 }
 
 function formatTimestamp(value) {
@@ -1726,15 +1708,11 @@ function JpyExchangeRateBadge({
     const updateCoords = () => {
       if (!buttonRef.current) return;
       const rect = buttonRef.current.getBoundingClientRect();
-      // Clamp horizontally so the tooltip never escapes the viewport on
-      // narrow mobile widths. The tooltip is up to 300px wide; with an
-      // 8px breathing margin on each side, the rightmost left position
-      // is innerWidth - 300 - 8.
-      const tooltipMaxWidth = 300;
-      const safeLeft = Math.min(
-        Math.max(8, rect.left),
-        Math.max(8, window.innerWidth - tooltipMaxWidth - 8),
-      );
+      const safeLeft = clampTooltipLeft({
+        triggerLeft: rect.left,
+        tooltipMaxWidth: 300,
+        viewportWidth: window.innerWidth,
+      });
       setCoords({ top: rect.bottom + 6, left: safeLeft });
     };
     updateCoords();
@@ -3120,16 +3098,13 @@ export default function PersonalFinanceCashflowSimulator() {
     const update = () => {
       if (!exportTriggerRef.current) return;
       const rect = exportTriggerRef.current.getBoundingClientRect();
-      // The dropdown is min 220px wide; on narrow mobile the trigger
-      // sits near the left edge so right-anchoring would push the menu
-      // off-screen. Clamp the right offset so we leave at least 8px
-      // breathing room on the left.
-      const menuMinWidth = 220;
-      const idealRight = window.innerWidth - rect.right;
-      const maxRight = Math.max(8, window.innerWidth - menuMinWidth - 8);
       setExportMenuCoords({
         top: rect.bottom + 8,
-        right: Math.max(8, Math.min(idealRight, maxRight)),
+        right: clampDropdownRight({
+          triggerRight: rect.right,
+          menuMinWidth: 220,
+          viewportWidth: window.innerWidth,
+        }),
       });
     };
     update();
@@ -3192,32 +3167,17 @@ export default function PersonalFinanceCashflowSimulator() {
         }
         hasPendingCloudSyncRef.current = false;
         setCloudSyncStatus("synced");
-
-        // If there was a local draft we just dropped, surface a banner so
-        // the user knows what happened and can restore the local copy.
-        if (localDraft) {
-          setHydrationNotice({
-            source: "cloud",
-            cloudUpdatedAt: cloudBackup?.updated_at || null,
-            pendingUpdatedAt: pendingUpdatedAtAtMountRef.current,
-            savedDraft: localDraft,
-          });
-        }
-      } else if (
-        hydration.source === "draft" &&
-        cloudBackup?.payload &&
-        pendingExistedAtMountRef.current
-      ) {
-        // We kept the local draft because its pending timestamp was newer
-        // than the cloud's. Worth surfacing so the user knows their cloud
-        // backup is currently behind.
-        setHydrationNotice({
-          source: "draft",
-          cloudUpdatedAt: cloudBackup?.updated_at || null,
-          pendingUpdatedAt: pendingUpdatedAtAtMountRef.current,
-          savedDraft: null,
-        });
       }
+
+      const notice = describeHydrationDecision({
+        source: hydration.source,
+        cloudPayload: cloudBackup?.payload || null,
+        cloudUpdatedAt: cloudBackup?.updated_at || null,
+        pendingExistedAtMount: pendingExistedAtMountRef.current,
+        pendingUpdatedAtAtMount: pendingUpdatedAtAtMountRef.current,
+        localDraft,
+      });
+      if (notice) setHydrationNotice(notice);
 
       setIsCloudHydrated(true);
     });
@@ -3245,21 +3205,7 @@ export default function PersonalFinanceCashflowSimulator() {
     return { minBalance, finalBalance, totalIncome, totalExpense, totalInstallmentInterest };
   }, [rows, installmentRows]);
 
-  const isScenarioEmpty = useMemo(() => {
-    const b = scenario.basics;
-    return (
-      n(b.startingTwd) === 0 &&
-      n(b.jpyCash) === 0 &&
-      n(b.jpyCashTwd) === 0 &&
-      n(b.monthlySalary) === 0 &&
-      n(b.monthlySubsidy) === 0 &&
-      n(b.monthlyRent) === 0 &&
-      n(b.monthlyLivingCost) === 0 &&
-      n(b.monthlyStudentLoan) === 0 &&
-      scenario.oneTimeItems.length === 0 &&
-      scenario.installments.length === 0
-    );
-  }, [scenario]);
+  const isScenarioEmpty = useMemo(() => isScenarioEmptyHelper(scenario), [scenario]);
 
   const loadTemplate = (templateKey) => {
     transitionApply(createTemplateScenario(templateKey));
@@ -3607,6 +3553,14 @@ export default function PersonalFinanceCashflowSimulator() {
     transitionApply(importPreview.incoming);
     setImportPreview(null);
   };
+
+  const importPreviewDiff = useMemo(
+    () =>
+      importPreview?.status === "ready"
+        ? computeImportDiff(scenario, importPreview.incoming)
+        : null,
+    [importPreview, scenario],
+  );
 
   const focusCompositionMonth = (monthKey) => {
     setUserSelectedMonthKey(monthKey);
@@ -5132,50 +5086,36 @@ export default function PersonalFinanceCashflowSimulator() {
                       fontSize: "13px",
                     }}
                   >
-                    {[
-                      ["手上台幣", "startingTwd", "元"],
-                      ["日幣現金", "jpyCash", "円"],
-                      ["每月薪資", "monthlySalary", "元"],
-                      ["每月補貼", "monthlySubsidy", "元"],
-                      ["每月房租", "monthlyRent", "元"],
-                      ["每月生活費", "monthlyLivingCost", "元"],
-                      ["每月學貸", "monthlyStudentLoan", "元"],
-                      ["試算月數", "monthsToProject", "月"],
-                    ].map(([label, key, suffix]) => {
-                      const before = n(scenario.basics[key]);
-                      const after = n(importPreview.incoming.basics[key]);
-                      const changed = before !== after;
-                      return (
-                        <div
-                          key={key}
+                    {importPreviewDiff.basics.map((row) => (
+                      <div
+                        key={row.key}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "2px",
+                          padding: "6px 8px",
+                          borderRadius: "8px",
+                          background: row.changed ? "#fef9c3" : "transparent",
+                        }}
+                      >
+                        <span style={{ fontSize: "11px", color: "#64748b" }}>{row.label}</span>
+                        <span
                           style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: "2px",
-                            padding: "6px 8px",
-                            borderRadius: "8px",
-                            background: changed ? "#fef9c3" : "transparent",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                            color: "#0f172a",
+                            fontVariantNumeric: "tabular-nums",
                           }}
                         >
-                          <span style={{ fontSize: "11px", color: "#64748b" }}>{label}</span>
-                          <span
-                            style={{
-                              fontSize: "13px",
-                              fontWeight: 700,
-                              color: "#0f172a",
-                              fontVariantNumeric: "tabular-nums",
-                            }}
-                          >
-                            {currency(after)} {suffix}
+                          {currency(row.incoming)} {row.suffix}
+                        </span>
+                        {row.changed ? (
+                          <span style={{ fontSize: "11px", color: "#92400e" }}>
+                            （目前 {currency(row.current)}）
                           </span>
-                          {changed ? (
-                            <span style={{ fontSize: "11px", color: "#92400e" }}>
-                              （目前 {currency(before)}）
-                            </span>
-                          ) : null}
-                        </div>
-                      );
-                    })}
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
                   <div
                     style={{
@@ -5188,11 +5128,12 @@ export default function PersonalFinanceCashflowSimulator() {
                     }}
                   >
                     <span>
-                      一次收支：{importPreview.incoming.oneTimeItems.length} 筆 ／ 分期：
-                      {importPreview.incoming.installments.length} 筆
+                      一次收支：{importPreviewDiff.oneTime.incoming} 筆 ／ 分期：
+                      {importPreviewDiff.installments.incoming} 筆
                     </span>
                     <span>
-                      （目前 {scenario.oneTimeItems.length} ／ {scenario.installments.length}）
+                      （目前 {importPreviewDiff.oneTime.current} ／{" "}
+                      {importPreviewDiff.installments.current}）
                     </span>
                   </div>
                   <div

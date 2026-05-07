@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { HistoryStack } from "../lib/historyStack.js";
+
 const HISTORY_LIMIT = 50;
 const COALESCE_MS = 600;
 
@@ -11,23 +13,34 @@ const COALESCE_MS = 600;
  *
  * `commit()` forces a flush before the timer fires (useful before
  * structural mutations like reordering or replacing the whole value).
+ *
+ * The actual past / future bookkeeping lives in `lib/historyStack.js`
+ * so it can be unit-tested without React.
  */
 export function useUndoableState(initialValue) {
   const [value, setInternalValue] = useState(initialValue);
-  const [pastCount, setPastCount] = useState(0);
-  const [futureCount, setFutureCount] = useState(0);
+  const [historyState, setHistoryState] = useState({
+    version: 0,
+    canUndo: false,
+    canRedo: false,
+  });
 
-  const pastRef = useRef([]);
-  const futureRef = useRef([]);
+  const stackRef = useRef(null);
+  if (stackRef.current === null) {
+    stackRef.current = new HistoryStack(HISTORY_LIMIT);
+  }
   // Capture the resolved initial value (useState already invoked the
-  // factory if `initialValue` was a function), so the ref never holds
-  // a lazy initializer by mistake.
+  // factory if `initialValue` was a function).
   const lastSnapshotRef = useRef(value);
   const coalesceTimerRef = useRef(null);
 
   const sync = useCallback(() => {
-    setPastCount(pastRef.current.length);
-    setFutureCount(futureRef.current.length);
+    const stack = stackRef.current;
+    setHistoryState((prev) => ({
+      version: prev.version + 1,
+      canUndo: stack.canUndo,
+      canRedo: stack.canRedo,
+    }));
   }, []);
 
   const flushPending = useCallback(() => {
@@ -39,11 +52,7 @@ export function useUndoableState(initialValue) {
 
   const pushHistoryEntry = useCallback(() => {
     if (lastSnapshotRef.current === undefined) return;
-    pastRef.current.push(lastSnapshotRef.current);
-    while (pastRef.current.length > HISTORY_LIMIT) {
-      pastRef.current.shift();
-    }
-    futureRef.current = [];
+    stackRef.current.push(lastSnapshotRef.current);
     sync();
   }, [sync]);
 
@@ -68,7 +77,6 @@ export function useUndoableState(initialValue) {
     [flushPending, pushHistoryEntry],
   );
 
-  // Track the latest committed value so the coalesced timer can capture it.
   useEffect(() => {
     if (!coalesceTimerRef.current) {
       lastSnapshotRef.current = value;
@@ -85,9 +93,8 @@ export function useUndoableState(initialValue) {
 
   const replace = useCallback(
     (next) => {
-      // Used for wholesale replacements (template load, import, redo from
-      // an external trigger) where we want the new value to start fresh
-      // history but still be reversible.
+      // Wholesale replacement: push current snapshot and switch to
+      // the new value, with redo cleared.
       flushPending();
       pushHistoryEntry();
       const resolved = typeof next === "function" ? next(value) : next;
@@ -99,12 +106,8 @@ export function useUndoableState(initialValue) {
 
   const undo = useCallback(() => {
     flushPending();
-    if (pastRef.current.length === 0) return;
-    const previous = pastRef.current.pop();
-    futureRef.current.push(lastSnapshotRef.current);
-    while (futureRef.current.length > HISTORY_LIMIT) {
-      futureRef.current.shift();
-    }
+    const previous = stackRef.current.undo(lastSnapshotRef.current);
+    if (previous === null) return;
     lastSnapshotRef.current = previous;
     setInternalValue(previous);
     sync();
@@ -112,12 +115,8 @@ export function useUndoableState(initialValue) {
 
   const redo = useCallback(() => {
     flushPending();
-    if (futureRef.current.length === 0) return;
-    const next = futureRef.current.pop();
-    pastRef.current.push(lastSnapshotRef.current);
-    while (pastRef.current.length > HISTORY_LIMIT) {
-      pastRef.current.shift();
-    }
+    const next = stackRef.current.redo(lastSnapshotRef.current);
+    if (next === null) return;
     lastSnapshotRef.current = next;
     setInternalValue(next);
     sync();
@@ -126,8 +125,7 @@ export function useUndoableState(initialValue) {
   const reset = useCallback(
     (next) => {
       flushPending();
-      pastRef.current = [];
-      futureRef.current = [];
+      stackRef.current.clear();
       lastSnapshotRef.current = next;
       setInternalValue(next);
       sync();
@@ -135,7 +133,6 @@ export function useUndoableState(initialValue) {
     [flushPending, sync],
   );
 
-  // Cleanup on unmount.
   useEffect(() => () => flushPending(), [flushPending]);
 
   return {
@@ -146,7 +143,8 @@ export function useUndoableState(initialValue) {
     commit,
     undo,
     redo,
-    canUndo: pastCount > 0,
-    canRedo: futureCount > 0,
+    canUndo: historyState.canUndo,
+    canRedo: historyState.canRedo,
+    _historyVersion: historyState.version,
   };
 }
