@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./styles/flowra.css";
 import { toPng } from "html-to-image";
 import { jsPDF } from "jspdf";
@@ -10,6 +11,13 @@ import { CHART_COLORS, CHART_THEME_VARS, ChartSurface, ChartTooltip, ChartToolti
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import { normalizeNumericInput, stepNumericValue } from "./lib/numberField.js";
+import {
+  FALLBACK_JPY_TO_TWD_RATE,
+  fetchJpyToTwdRate,
+  getCachedJpyToTwdRate,
+  saveJpyToTwdRate,
+  todayKey as jpyTodayKey,
+} from "./lib/jpyExchangeRate.js";
 import {
   clearPendingCloudSync,
   doesPendingCloudSyncMatchPayload,
@@ -157,7 +165,8 @@ function createTemplateScenario(templateKey = DEFAULT_TEMPLATE_KEY) {
     },
     basics: {
       startingTwd: template.basics.startingTwd,
-      jpyCashTwd: template.basics.jpyCashTwd,
+      jpyCash: n(template.basics.jpyCash),
+      jpyCashTwd: n(template.basics.jpyCashTwd),
       includeJpyCash: template.basics.includeJpyCash,
       monthlySalary: template.basics.monthlySalary,
       salaryStartsMonth: addMonths(baseMonth, template.basics.salaryStartsOffset),
@@ -266,6 +275,7 @@ function migrateLegacyScenario(raw) {
     ),
     basics: {
       startingTwd: n(raw.startingTwd),
+      jpyCash: n(raw.jpyCash),
       jpyCashTwd: n(raw.jpyCashTwd),
       includeJpyCash: raw.includeJpyCash !== false,
       monthlySalary: n(raw.monthlySalary),
@@ -394,6 +404,59 @@ function formatRelativeTimestamp(value) {
   return date.toLocaleDateString("zh-TW", { month: "2-digit", day: "2-digit" });
 }
 
+function useJpyExchangeRate() {
+  const [state, setState] = useState(() => {
+    const cached = getCachedJpyToTwdRate();
+    if (!cached) {
+      return { rate: FALLBACK_JPY_TO_TWD_RATE, fetchedAt: "", date: "", source: "fallback", error: "" };
+    }
+    return {
+      rate: cached.rate,
+      fetchedAt: cached.fetchedAt,
+      date: cached.date,
+      source: cached.date === jpyTodayKey() ? "fresh" : "stale",
+      error: "",
+    };
+  });
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async (options = {}) => {
+    if (typeof window === "undefined") return;
+    const controller = options.signal ? null : new AbortController();
+    const signal = options.signal || controller?.signal;
+    setLoading(true);
+    try {
+      const entry = await fetchJpyToTwdRate(signal);
+      saveJpyToTwdRate(entry);
+      setState({
+        rate: entry.rate,
+        fetchedAt: entry.fetchedAt,
+        date: entry.date,
+        source: "fresh",
+        error: "",
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setState((prev) => ({
+        ...prev,
+        source: prev.fetchedAt ? "stale" : "fallback",
+        error: error?.message || "讀取匯率失敗",
+      }));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (state.source === "fresh") return undefined;
+    const controller = new AbortController();
+    refresh({ signal: controller.signal });
+    return () => controller.abort();
+  }, [refresh, state.source]);
+
+  return { ...state, loading, refresh };
+}
+
 function monthOptions(baseMonth, count) {
   return Array.from({ length: count }, (_, index) => {
     const value = addMonths(baseMonth, index);
@@ -447,14 +510,24 @@ function parseInstallmentLines(text, baseMonth) {
   return { parsed, errors };
 }
 
-function buildProjection(scenario) {
+function resolveJpyCashTwd(basics, jpyRate) {
+  const cash = n(basics.jpyCash);
+  if (cash > 0) {
+    const rate = n(jpyRate);
+    if (rate > 0) return Math.round(cash * rate);
+  }
+  return n(basics.jpyCashTwd);
+}
+
+function buildProjection(scenario, jpyRate = 0) {
   const { basics, oneTimeItems, installments, meta } = scenario;
   const totalMonths = Math.max(0, Math.round(n(basics.monthsToProject)));
   if (totalMonths === 0) {
     return [];
   }
 
-  let balance = n(basics.startingTwd) + (basics.includeJpyCash ? n(basics.jpyCashTwd) : 0);
+  const jpyTwd = resolveJpyCashTwd(basics, jpyRate);
+  let balance = n(basics.startingTwd) + (basics.includeJpyCash ? jpyTwd : 0);
   const rows = [];
 
   const installmentRows = installments.map((item) => {
@@ -984,6 +1057,8 @@ function DownloadIcon({ size = 16 }) {
 function Collapsible({ open, children, topGap = 12 }) {
   return (
     <div
+      className="flowra-collapsible"
+      data-open={open ? "true" : "false"}
       style={{
         display: "grid",
         gridTemplateRows: open ? "1fr" : "0fr",
@@ -991,7 +1066,7 @@ function Collapsible({ open, children, topGap = 12 }) {
         opacity: open ? 1 : 0,
       }}
     >
-      <div style={{ overflow: "hidden", minHeight: 0 }}>
+      <div className="flowra-collapsible-inner" style={{ overflow: "hidden", minHeight: 0 }}>
         <div style={{ paddingTop: open ? topGap : 0, transition: `padding-top ${COLLAPSE_DURATION} ${COLLAPSE_EASE}` }}>
           {children}
         </div>
@@ -1158,9 +1233,9 @@ function getButtonVariantStyles(variant) {
   if (variant === "dropdownItem") {
     return {
       base: styles.dropdownItem,
-      hover: { background: "#f8fafc" },
-      focus: styles.inputFocus,
-      active: { background: "#e2e8f0" },
+      hover: { background: "#e2e8f0", color: "#0f172a" },
+      focus: { background: "#e2e8f0", outline: "2px solid #94a3b8", outlineOffset: "-2px" },
+      active: { background: "#cbd5e1" },
     };
   }
   if (variant === "dangerButton") {
@@ -1419,14 +1494,17 @@ function InteractiveTextarea({ style, disabled, onFocus, onBlur, onMouseEnter, o
   );
 }
 
-function Field({ label, value, onChange, suffix = "", min, step = 1000, precision = 0, disabled }) {
+function Field({ label, value, onChange, suffix = "", min, step = 1000, precision = 0, disabled, labelAdornment = null }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [hoveredStepper, setHoveredStepper] = useState("");
 
   return (
     <div>
-      <label style={styles.label}>{label}</label>
+      <label style={{ ...styles.label, display: "flex", alignItems: "center", gap: "6px" }}>
+        <span>{label}</span>
+        {labelAdornment}
+      </label>
       <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
         <div
           style={{
@@ -1501,6 +1579,197 @@ function Field({ label, value, onChange, suffix = "", min, step = 1000, precisio
         {suffix ? <span style={{ fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>{suffix}</span> : null}
       </div>
     </div>
+  );
+}
+
+function JpyExchangeRateBadge({
+  rate,
+  fetchedAt,
+  source,
+  loading,
+  error,
+  onRefresh,
+  jpyCash,
+  effectiveTwd,
+  legacyTwd,
+  disabled,
+  onMigrateLegacy,
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef(null);
+  const closeTimerRef = useRef(null);
+
+  const cancelClose = () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimerRef.current = setTimeout(() => setOpen(false), 120);
+  };
+  useEffect(() => () => cancelClose(), []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const updateCoords = () => {
+      if (!buttonRef.current) return;
+      const rect = buttonRef.current.getBoundingClientRect();
+      setCoords({ top: rect.bottom + 6, left: rect.left });
+    };
+    updateCoords();
+    window.addEventListener("scroll", updateCoords, true);
+    window.addEventListener("resize", updateCoords);
+    return () => {
+      window.removeEventListener("scroll", updateCoords, true);
+      window.removeEventListener("resize", updateCoords);
+    };
+  }, [open]);
+
+  const showLegacyHint = jpyCash <= 0 && legacyTwd > 0;
+  const rateLabel = rate > 0 ? `1 ¥ = ${rate.toFixed(4)} 元` : "—";
+  let statusLabel = "尚未取得";
+  if (loading) {
+    statusLabel = "更新中…";
+  } else if (source === "fresh") {
+    statusLabel = `${formatTimestamp(fetchedAt)} 更新`;
+  } else if (source === "stale" && fetchedAt) {
+    statusLabel = `上次更新 ${formatTimestamp(fetchedAt)}`;
+  } else if (source === "fallback") {
+    statusLabel = "暫用預設匯率";
+  }
+
+  return (
+    <span
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", lineHeight: 0 }}
+      onMouseEnter={() => {
+        cancelClose();
+        setOpen(true);
+      }}
+      onMouseLeave={scheduleClose}
+      onFocus={() => {
+        cancelClose();
+        setOpen(true);
+      }}
+      onBlur={scheduleClose}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label="顯示目前匯率資訊"
+        aria-expanded={open}
+        style={{
+          width: "16px",
+          height: "16px",
+          borderRadius: "999px",
+          border: "1px solid #cbd5e1",
+          background: open ? "#e2e8f0" : "#ffffff",
+          color: "#64748b",
+          fontSize: "10px",
+          fontWeight: 700,
+          fontStyle: "italic",
+          fontFamily: "Georgia, serif",
+          cursor: "help",
+          padding: 0,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "background 120ms ease, color 120ms ease",
+        }}
+      >
+        i
+      </button>
+      {open && typeof document !== "undefined" ? createPortal(
+        <div
+          role="tooltip"
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          style={{
+            position: "fixed",
+            top: coords.top,
+            left: coords.left,
+            zIndex: 1000,
+            minWidth: "240px",
+            maxWidth: "300px",
+            padding: "10px 12px",
+            borderRadius: "10px",
+            background: "#ffffff",
+            color: "#0f172a",
+            fontSize: "12px",
+            lineHeight: 1.45,
+            border: "1px solid #e2e8f0",
+            boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+            textAlign: "left",
+            fontWeight: 400,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+            <span style={{ color: "#64748b" }}>目前匯率</span>
+            <strong style={{ color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>{rateLabel}</strong>
+          </div>
+          <div style={{ color: "#94a3b8", fontSize: "11px" }}>{statusLabel}</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+            <span style={{ color: "#64748b" }}>換算後</span>
+            <strong style={{ color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>NT$ {currency(effectiveTwd)}</strong>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={loading || disabled}
+              style={{
+                width: "100%",
+                border: "1px solid #cbd5e1",
+                background: "#f8fafc",
+                color: "#0f172a",
+                padding: "4px 8px",
+                borderRadius: "8px",
+                fontSize: "11px",
+                cursor: loading || disabled ? "not-allowed" : "pointer",
+                opacity: loading || disabled ? 0.6 : 1,
+              }}
+            >
+              {loading ? "更新中…" : "重新整理匯率"}
+            </button>
+          </div>
+          {error ? (
+            <div style={{ color: "#b45309", fontSize: "11px" }}>
+              讀取失敗：{error}
+            </div>
+          ) : null}
+          {showLegacyHint ? (
+            <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+              <span style={{ color: "#64748b", fontSize: "11px" }}>
+                偵測到舊版資料 NT$ {currency(legacyTwd)}，建議改填日幣金額。
+              </span>
+              <button
+                type="button"
+                onClick={onMigrateLegacy}
+                disabled={disabled || rate <= 0}
+                style={{
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  color: "#0f172a",
+                  padding: "4px 8px",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  cursor: disabled || rate <= 0 ? "not-allowed" : "pointer",
+                  opacity: disabled || rate <= 0 ? 0.6 : 1,
+                }}
+              >
+                依目前匯率換算
+              </button>
+            </div>
+          ) : null}
+        </div>,
+        document.body
+      ) : null}
+    </span>
   );
 }
 
@@ -1683,7 +1952,7 @@ function MonthDetailTable({ rows, selectedMonthKey, hidden, mobile, monthRefs, r
   const subTd = { ...numericTd, color: "#64748b", fontSize: "12px" };
 
   return (
-    <div style={styles.tableWrap}>
+    <div className="flowra-table-wrap" style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
@@ -2170,7 +2439,10 @@ export default function PersonalFinanceCashflowSimulator() {
   const [cloudUserEmail, setCloudUserEmail] = useState("");
   const [isSigningInWithGoogle, setIsSigningInWithGoogle] = useState(false);
   const [isCloudBackupLoading, setIsCloudBackupLoading] = useState(false);
+  const [isCloudHydrated, setIsCloudHydrated] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [exportMenuCoords, setExportMenuCoords] = useState({ top: 0, right: 0 });
+  const exportTriggerRef = useRef(null);
   const [isPreparingPdf, setIsPreparingPdf] = useState(false);
   const [isPreparingReportExport, setIsPreparingReportExport] = useState(false);
   const [isOffline, setIsOffline] = useState(() => (typeof navigator === "undefined" ? false : !navigator.onLine));
@@ -2183,6 +2455,8 @@ export default function PersonalFinanceCashflowSimulator() {
   const cloudHydratedRef = useRef(false);
   const hasLocalDraftRef = useRef(false);
   const hasPendingCloudSyncRef = useRef(false);
+  const pendingExistedAtMountRef = useRef(false);
+  const pendingUpdatedAtAtMountRef = useRef(null);
   const hydrationInitializedRef = useRef(false);
   const autoSyncTimerRef = useRef(null);
   const scenarioInitializedRef = useRef(false);
@@ -2193,11 +2467,20 @@ export default function PersonalFinanceCashflowSimulator() {
   const compositionChartRef = useRef(null);
   const monthDetailRef = useRef(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const mobile = viewportWidth < 860;
+  const isExporting = isPreparingPdf || isPreparingReportExport;
+  const mobile = !isExporting && viewportWidth < 860;
   const hiddenAmounts = false;
   const readonlyShared = false;
   const supabaseReady = useMemo(() => isSupabaseConfigured(), []);
-  const projectionResult = useMemo(() => buildProjection(scenario), [scenario]);
+  const jpyExchangeRate = useJpyExchangeRate();
+  const effectiveJpyTwd = useMemo(
+    () => resolveJpyCashTwd(scenario.basics, jpyExchangeRate.rate),
+    [scenario.basics, jpyExchangeRate.rate]
+  );
+  const projectionResult = useMemo(
+    () => buildProjection(scenario, jpyExchangeRate.rate),
+    [scenario, jpyExchangeRate.rate]
+  );
   const rows = Array.isArray(projectionResult) ? projectionResult : projectionResult.rows;
   const installmentRows = Array.isArray(projectionResult) ? [] : projectionResult.installmentRows;
   const generatedAt = useMemo(() => new Date(), []);
@@ -2225,6 +2508,8 @@ export default function PersonalFinanceCashflowSimulator() {
 
       hasLocalDraftRef.current = Boolean(localDraft);
       hasPendingCloudSyncRef.current = Boolean(pendingCloudSync);
+      pendingExistedAtMountRef.current = Boolean(pendingCloudSync);
+      pendingUpdatedAtAtMountRef.current = pendingCloudSync?.updatedAt || null;
 
       if (localDraft) {
         transitionApply(localDraft, { markDirty: false });
@@ -2298,6 +2583,7 @@ export default function PersonalFinanceCashflowSimulator() {
       cloudAuthState !== "authenticated" ||
       cloudSetupState !== "ready" ||
       cloudSyncStatus !== "pending" ||
+      !isCloudHydrated ||
       isOffline
     ) {
       return undefined;
@@ -2317,7 +2603,7 @@ export default function PersonalFinanceCashflowSimulator() {
         autoSyncTimerRef.current = null;
       }
     };
-  }, [cloudAuthState, cloudSetupState, cloudSyncStatus, isOffline, scenario]);
+  }, [cloudAuthState, cloudSetupState, cloudSyncStatus, isCloudHydrated, isOffline, scenario]);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -2329,6 +2615,33 @@ export default function PersonalFinanceCashflowSimulator() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!isExportMenuOpen || typeof window === "undefined") return undefined;
+    const update = () => {
+      if (!exportTriggerRef.current) return;
+      const rect = exportTriggerRef.current.getBoundingClientRect();
+      setExportMenuCoords({
+        top: rect.bottom + 8,
+        right: window.innerWidth - rect.right,
+      });
+    };
+    update();
+    const onPointerDown = (event) => {
+      if (!exportTriggerRef.current) return;
+      if (exportTriggerRef.current.contains(event.target)) return;
+      if (event.target.closest && event.target.closest("[data-export-menu]")) return;
+      setIsExportMenuOpen(false);
+    };
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    window.addEventListener("mousedown", onPointerDown);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("mousedown", onPointerDown);
+    };
+  }, [isExportMenuOpen]);
 
   useEffect(() => {
     if (!supabaseReady) {
@@ -2402,7 +2715,6 @@ export default function PersonalFinanceCashflowSimulator() {
       cloudAuthState !== "authenticated" ||
       cloudSetupState !== "ready" ||
       !hydrationInitializedRef.current ||
-      hasLocalDraftRef.current ||
       cloudHydratedRef.current
     ) {
       return undefined;
@@ -2417,17 +2729,33 @@ export default function PersonalFinanceCashflowSimulator() {
       if (cancelled) return;
       cloudHydratedRef.current = true;
 
+      // Always re-read the latest local draft — it may have changed between
+      // mount and the cloud fetch resolving (e.g. user typed during loading).
+      const localDraft = window.localStorage
+        ? readDraftScenario(window.localStorage)
+        : null;
+
       const hydration = resolveHydrationSource({
-        localDraft: null,
+        localDraft,
         cloudPayload: cloudBackup?.payload || null,
+        cloudUpdatedAt: cloudBackup?.updated_at || null,
+        pendingExistedAtMount: pendingExistedAtMountRef.current,
+        pendingUpdatedAtAtMount: pendingUpdatedAtAtMountRef.current,
       });
 
       if (hydration.source === "cloud" && hydration.payload) {
         transitionApply(hydration.payload, { markDirty: false });
-        if (!hasPendingCloudSyncRef.current) {
-          setCloudSyncStatus("synced");
+        // Cloud is authoritative now — discard any pending record so the
+        // autoSync effect cannot push stale (or default-shaped) local data
+        // back over the freshly-restored cloud copy.
+        if (window.localStorage) {
+          clearPendingCloudSync(window.localStorage);
         }
+        hasPendingCloudSyncRef.current = false;
+        setCloudSyncStatus("synced");
       }
+
+      setIsCloudHydrated(true);
     });
 
     return () => {
@@ -2601,15 +2929,36 @@ export default function PersonalFinanceCashflowSimulator() {
     XLSX.writeFile(workbook, `${exportFileBase(scenario.meta.baseMonth)}.xlsx`);
   };
 
+  const captureNodeAsPng = async (node) => {
+    // Wait two animation frames so the export-mode CSS (forced 1200px width,
+    // overflow:visible, mobile→desktop) has applied before measuring.
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    if (document.fonts?.ready) {
+      await document.fonts.ready;
+    }
+    const width = Math.max(node.scrollWidth, node.offsetWidth);
+    const height = Math.max(node.scrollHeight, node.offsetHeight);
+    return toPng(node, {
+      pixelRatio: 2,
+      cacheBust: true,
+      backgroundColor: "#ffffff",
+      width,
+      height,
+      style: {
+        transform: "none",
+        margin: "0",
+        width: `${width}px`,
+        height: `${height}px`,
+      },
+    });
+  };
+
   const exportPng = async () => {
     if (!reportRef.current) return;
     try {
       setIsPreparingReportExport(true);
-      await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      if (document.fonts?.ready) {
-        await document.fonts.ready;
-      }
-      const dataUrl = await toPng(reportRef.current, { pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff" });
+      const dataUrl = await captureNodeAsPng(reportRef.current);
       const anchor = document.createElement("a");
       anchor.href = dataUrl;
       anchor.download = `${exportFileBase(scenario.meta.baseMonth)}.png`;
@@ -2625,11 +2974,7 @@ export default function PersonalFinanceCashflowSimulator() {
     if (!targetRef?.current) return;
     try {
       targetRef.current.classList.add("flowra-capture-export");
-      await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      if (document.fonts?.ready) {
-        await document.fonts.ready;
-      }
-      const dataUrl = await toPng(targetRef.current, { pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff" });
+      const dataUrl = await captureNodeAsPng(targetRef.current);
       const anchor = document.createElement("a");
       anchor.href = dataUrl;
       anchor.download = `${exportFileBase(scenario.meta.baseMonth)}-${fileSuffix}.png`;
@@ -2645,27 +2990,31 @@ export default function PersonalFinanceCashflowSimulator() {
     if (!reportRef.current) return;
     try {
       setIsPreparingPdf(true);
-      await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      if (document.fonts?.ready) {
-        await document.fonts.ready;
-      }
-      const dataUrl = await toPng(reportRef.current, { pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff" });
+      const dataUrl = await captureNodeAsPng(reportRef.current);
       const pdf = new jsPDF({ orientation: "p", unit: "mm", format: "a4" });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const margin = 8;
+      const usableWidth = pageWidth - margin * 2;
+      const usableHeight = pageHeight - margin * 2;
       const img = new Image();
       await new Promise((resolve, reject) => {
         img.onload = resolve;
         img.onerror = reject;
         img.src = dataUrl;
       });
-      const ratio = Math.min((pageWidth - margin * 2) / img.width, (pageHeight - margin * 2) / img.height);
-      const renderWidth = img.width * ratio;
-      const renderHeight = img.height * ratio;
-      const x = (pageWidth - renderWidth) / 2;
-      const y = margin;
-      pdf.addImage(dataUrl, "PNG", x, y, renderWidth, renderHeight);
+      const renderWidth = usableWidth;
+      const renderHeight = (img.height * renderWidth) / img.width;
+      let heightLeft = renderHeight;
+      let position = margin;
+      pdf.addImage(dataUrl, "PNG", margin, position, renderWidth, renderHeight);
+      heightLeft -= usableHeight;
+      while (heightLeft > 0) {
+        position = margin - (renderHeight - heightLeft);
+        pdf.addPage();
+        pdf.addImage(dataUrl, "PNG", margin, position, renderWidth, renderHeight);
+        heightLeft -= usableHeight;
+      }
       pdf.save(`${exportFileBase(scenario.meta.baseMonth)}.pdf`);
     } catch (error) {
       window.alert("報表下載失敗，請稍後再試。");
@@ -2899,6 +3248,34 @@ export default function PersonalFinanceCashflowSimulator() {
         .flowra-report-export .flowra-main-grid {
           grid-template-columns: 1fr !important;
         }
+        .flowra-pdf-export,
+        .flowra-report-export,
+        .flowra-capture-export {
+          width: 1200px !important;
+          max-width: 1200px !important;
+          min-width: 1200px !important;
+        }
+        .flowra-pdf-export .flowra-table-wrap,
+        .flowra-report-export .flowra-table-wrap,
+        .flowra-capture-export .flowra-table-wrap {
+          overflow: visible !important;
+        }
+        .flowra-pdf-export .flowra-collapsible,
+        .flowra-report-export .flowra-collapsible,
+        .flowra-capture-export .flowra-collapsible {
+          grid-template-rows: 1fr !important;
+          opacity: 1 !important;
+        }
+        .flowra-pdf-export .flowra-collapsible[data-open="false"],
+        .flowra-report-export .flowra-collapsible[data-open="false"],
+        .flowra-capture-export .flowra-collapsible[data-open="false"] {
+          display: none !important;
+        }
+        .flowra-pdf-export .flowra-collapsible-inner,
+        .flowra-report-export .flowra-collapsible-inner,
+        .flowra-capture-export .flowra-collapsible-inner {
+          overflow: visible !important;
+        }
         .flowra-hover-card:hover {
           border-color: #cbd5e1 !important;
         }
@@ -2969,7 +3346,7 @@ export default function PersonalFinanceCashflowSimulator() {
         }
       `}</style>
       <div style={{ ...styles.container, ...styles.chartTheme }} className={`flowra-print-root${isPreparingPdf ? " flowra-pdf-export" : ""}${isPreparingReportExport ? " flowra-report-export" : ""}`} ref={reportRef}>
-        <div style={styles.header}>
+        <div style={{ ...styles.header, userSelect: "none", WebkitUserSelect: "none" }}>
           <div>
             <h1 style={styles.title}>Flowra</h1>
             <p style={styles.subtitle}>
@@ -3012,7 +3389,34 @@ export default function PersonalFinanceCashflowSimulator() {
               <SettingsGroup title="可用現金" accent="#d97706">
                 <div className={inputGridClassName}>
                   <Field label="目前手上台幣" value={scenario.basics.startingTwd} onChange={(value) => patchBasics({ startingTwd: value })} suffix="元" disabled={readonlyShared} />
-                  <Field label="日幣現金換算台幣" value={scenario.basics.jpyCashTwd} onChange={(value) => patchBasics({ jpyCashTwd: value })} suffix="元" disabled={readonlyShared} />
+                  <Field
+                    label="日幣現金"
+                    value={scenario.basics.jpyCash}
+                    onChange={(value) => patchBasics({ jpyCash: Math.max(0, Math.round(n(value))) })}
+                    suffix="円"
+                    step={1000}
+                    min={0}
+                    disabled={readonlyShared}
+                    labelAdornment={(
+                      <JpyExchangeRateBadge
+                        rate={jpyExchangeRate.rate}
+                        fetchedAt={jpyExchangeRate.fetchedAt}
+                        source={jpyExchangeRate.source}
+                        loading={jpyExchangeRate.loading}
+                        error={jpyExchangeRate.error}
+                        onRefresh={() => jpyExchangeRate.refresh()}
+                        jpyCash={n(scenario.basics.jpyCash)}
+                        effectiveTwd={effectiveJpyTwd}
+                        legacyTwd={n(scenario.basics.jpyCashTwd)}
+                        onMigrateLegacy={() => {
+                          const legacy = n(scenario.basics.jpyCashTwd);
+                          if (legacy <= 0 || jpyExchangeRate.rate <= 0) return;
+                          patchBasics({ jpyCash: Math.max(0, Math.round(legacy / jpyExchangeRate.rate)) });
+                        }}
+                        disabled={readonlyShared}
+                      />
+                    )}
+                  />
                 </div>
                 <div style={styles.switchField}>
                   <div style={styles.switchCopy}>
@@ -3306,12 +3710,22 @@ export default function PersonalFinanceCashflowSimulator() {
                 <InteractiveButton onClick={() => fileInputRef.current?.click()}>
                   匯入資料
                 </InteractiveButton>
-                <div style={{ position: "relative" }}>
+                <div ref={exportTriggerRef} style={{ position: "relative" }}>
                   <InteractiveButton onClick={() => setIsExportMenuOpen((value) => !value)} aria-expanded={isExportMenuOpen}>
                     匯出
                   </InteractiveButton>
-                  {isExportMenuOpen ? (
-                    <FloatingSurface style={styles.dropdownMenu} motionClassName="flowra-surface-enter">
+                  {isExportMenuOpen && typeof document !== "undefined" ? createPortal(
+                    <FloatingSurface
+                      data-export-menu="true"
+                      style={{
+                        ...styles.dropdownMenu,
+                        position: "fixed",
+                        top: exportMenuCoords.top,
+                        right: exportMenuCoords.right,
+                        zIndex: 1000,
+                      }}
+                      motionClassName="flowra-surface-enter"
+                    >
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); exportPng(); }}>
                         下載整頁圖片
                       </InteractiveButton>
@@ -3327,7 +3741,8 @@ export default function PersonalFinanceCashflowSimulator() {
                       <InteractiveButton variant="dropdownItem" onClick={() => { setIsExportMenuOpen(false); printReport(); }}>
                         列印
                       </InteractiveButton>
-                    </FloatingSurface>
+                    </FloatingSurface>,
+                    document.body
                   ) : null}
                 </div>
               </div>
