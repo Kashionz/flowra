@@ -1,12 +1,4 @@
-import React, {
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./styles/flowra.css";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
@@ -26,6 +18,7 @@ import {
 } from "./components/ui/chart.jsx";
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { useUndoableState } from "./hooks/useScenarioHistory.js";
+import { useCloudSync } from "./hooks/useCloudSync.js";
 import { CATEGORY_META, CATEGORY_OPTIONS } from "./lib/expenseCategories.js";
 import {
   addMonths,
@@ -52,7 +45,6 @@ import {
 } from "./lib/jpyExchangeRate.js";
 import {
   clearPendingCloudSync,
-  doesPendingCloudSyncMatchPayload,
   formatAutoSyncStatus,
   readDraftScenario,
   readPendingCloudSync,
@@ -61,17 +53,7 @@ import {
   writeDraftScenario,
   writePendingCloudSync,
 } from "./lib/scenarioPersistence.js";
-import {
-  checkFlowraCloudSetup,
-  createFlowraSupabaseClient,
-  getLatestCloudBackup,
-  getCurrentSupabaseUser,
-  getSupabaseConfigHint,
-  isSupabaseConfigured,
-  signInWithGoogle,
-  signOutSupabase,
-  upsertCloudBackup,
-} from "./lib/flowraSupabase.js";
+import { createFlowraSupabaseClient } from "./lib/flowraSupabase.js";
 import {
   LineChart as RechartsLineChart,
   Line,
@@ -495,16 +477,6 @@ function parseInstallmentLines(text, baseMonth) {
   return { parsed, errors };
 }
 
-function getErrorMessage(error, fallback) {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  if (error && typeof error === "object" && "message" in error && error.message) {
-    return String(error.message);
-  }
-  return fallback;
-}
-
 function isScenarioPayload(value) {
   return Boolean(
     value &&
@@ -518,16 +490,6 @@ function isScenarioPayload(value) {
 
 function resolveSyncPayload(candidate, scenario) {
   return isScenarioPayload(candidate) ? candidate : toPersistedScenario(scenario);
-}
-
-function withTimeout(promise, timeoutMs, message) {
-  let timerId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timerId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    window.clearTimeout(timerId);
-  });
 }
 
 function EmptyChartState() {
@@ -2818,62 +2780,6 @@ const styles = {
   },
 };
 
-const cloudInitialState = {
-  // Lifecycle states keep their pre-existing string contracts so any
-  // helper that switches on them keeps working.
-  authState: isSupabaseConfigured() ? "checking" : "unconfigured",
-  setupState: isSupabaseConfigured() ? "checking" : "unconfigured",
-  syncStatus: "idle",
-  userEmail: "",
-  notice: "",
-  isBackupLoading: false,
-  isSigningIn: false,
-  isHydrated: false,
-};
-
-function cloudReducer(state, action) {
-  switch (action.type) {
-    case "auth/state": {
-      const next =
-        typeof action.value === "function" ? action.value(state.authState) : action.value;
-      return state.authState === next ? state : { ...state, authState: next };
-    }
-    case "setup/state": {
-      const next =
-        typeof action.value === "function" ? action.value(state.setupState) : action.value;
-      return state.setupState === next ? state : { ...state, setupState: next };
-    }
-    case "sync/status": {
-      const next =
-        typeof action.value === "function" ? action.value(state.syncStatus) : action.value;
-      return state.syncStatus === next ? state : { ...state, syncStatus: next };
-    }
-    case "user/email": {
-      const next =
-        typeof action.value === "function" ? action.value(state.userEmail) : action.value;
-      return state.userEmail === next ? state : { ...state, userEmail: next };
-    }
-    case "notice": {
-      const next = typeof action.value === "function" ? action.value(state.notice) : action.value;
-      return state.notice === next ? state : { ...state, notice: next };
-    }
-    case "backup/loading": {
-      const next =
-        typeof action.value === "function" ? action.value(state.isBackupLoading) : action.value;
-      return state.isBackupLoading === next ? state : { ...state, isBackupLoading: next };
-    }
-    case "signin/loading": {
-      const next =
-        typeof action.value === "function" ? action.value(state.isSigningIn) : action.value;
-      return state.isSigningIn === next ? state : { ...state, isSigningIn: next };
-    }
-    case "hydration/done":
-      return state.isHydrated ? state : { ...state, isHydrated: true };
-    default:
-      return state;
-  }
-}
-
 export default function PersonalFinanceCashflowSimulator() {
   const {
     value: scenario,
@@ -2886,7 +2792,6 @@ export default function PersonalFinanceCashflowSimulator() {
     canRedo,
   } = useUndoableState(() => createDefaultScenario());
   const [sessionMeta, setSessionMeta] = useState(() => readSessionMeta());
-  const [, setCloudBackupUpdatedAt] = useState("");
   const [selectedMonthKey, setSelectedMonthKey] = useState("");
   const [expenseMode, setExpenseMode] = useState("absolute");
   const [expenseView, setExpenseView] = useState("group");
@@ -2895,46 +2800,6 @@ export default function PersonalFinanceCashflowSimulator() {
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [openOneTimeItemIds, setOpenOneTimeItemIds] = useState({});
   const [openInstallmentItemIds, setOpenInstallmentItemIds] = useState({});
-  const [cloudState, dispatchCloud] = useReducer(cloudReducer, cloudInitialState);
-  const {
-    authState: cloudAuthState,
-    setupState: cloudSetupState,
-    syncStatus: cloudSyncStatus,
-    userEmail: cloudUserEmail,
-    notice: cloudNotice,
-    isBackupLoading: isCloudBackupLoading,
-    isSigningIn: isSigningInWithGoogle,
-    isHydrated: isCloudHydrated,
-  } = cloudState;
-  // Stable adapter functions so the rest of the component keeps the
-  // setX(value) shape it had before. Each one is wrapped in useCallback
-  // (inside the reducer) so dependency arrays stay tight.
-  const setCloudAuthState = useCallback(
-    (value) => dispatchCloud({ type: "auth/state", value }),
-    [],
-  );
-  const setCloudSetupState = useCallback(
-    (value) => dispatchCloud({ type: "setup/state", value }),
-    [],
-  );
-  const setCloudSyncStatus = useCallback(
-    (value) => dispatchCloud({ type: "sync/status", value }),
-    [],
-  );
-  const setCloudUserEmail = useCallback(
-    (value) => dispatchCloud({ type: "user/email", value }),
-    [],
-  );
-  const setCloudNotice = useCallback((value) => dispatchCloud({ type: "notice", value }), []);
-  const setIsCloudBackupLoading = useCallback(
-    (value) => dispatchCloud({ type: "backup/loading", value }),
-    [],
-  );
-  const setIsSigningInWithGoogle = useCallback(
-    (value) => dispatchCloud({ type: "signin/loading", value }),
-    [],
-  );
-  const setIsCloudHydrated = useCallback(() => dispatchCloud({ type: "hydration/done" }), []);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [hydrationNotice, setHydrationNotice] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
@@ -2972,7 +2837,6 @@ export default function PersonalFinanceCashflowSimulator() {
   const mobile = !isExporting && viewportWidth < 860;
   const hiddenAmounts = false;
   const readonlyShared = false;
-  const supabaseReady = useMemo(() => isSupabaseConfigured(), []);
   const jpyExchangeRate = useJpyExchangeRate();
   // useDeferredValue lets React drop intermediate scenarios when the user is
   // typing fast, so buildProjection only re-runs once the input settles.
@@ -3014,21 +2878,6 @@ export default function PersonalFinanceCashflowSimulator() {
     [sessionMeta.lastSyncedAt],
   );
 
-  const cloudSetupMessage = useMemo(() => {
-    switch (cloudSetupState) {
-      case "ready":
-        return "雲端備份已就緒。";
-      case "checking":
-        return "正在檢查雲端備份狀態。";
-      case "missing":
-        return "雲端備份目前暫時不可用。";
-      case "error":
-        return "雲端備份狀態檢查失敗。";
-      default:
-        return getSupabaseConfigHint();
-    }
-  }, [cloudSetupState]);
-
   const transitionApply = useCallback(
     (nextScenario, options = {}) => {
       skipNextScenarioDirtyRef.current = options.markDirty === false;
@@ -3046,149 +2895,43 @@ export default function PersonalFinanceCashflowSimulator() {
     [resetScenarioHistory, replaceScenario],
   );
 
-  const refreshCloudBackup = useCallback(
-    async (options = {}) => {
-      const { silent = false, applyPayload = false } = options;
-      if (cloudSetupState !== "ready") {
-        if (!silent) {
-          setCloudNotice(cloudSetupMessage);
-        }
-        return { data: null, error: new Error(cloudSetupMessage) };
-      }
-      if (cloudAuthState !== "authenticated") {
-        const error = new Error("請先登入，才能讀取雲端備份。");
-        if (!silent) {
-          setCloudNotice(error.message);
-        }
-        return { data: null, error };
-      }
-
-      setIsCloudBackupLoading(true);
-      try {
-        const { data, error } = await getLatestCloudBackup();
-        if (error) {
-          if (!silent) {
-            setCloudNotice(error.message);
-          }
-          return { data: null, error };
-        }
-
-        if (!data?.payload) {
-          setCloudBackupUpdatedAt("");
-          if (!silent) {
-            setCloudNotice("雲端目前沒有備份。");
-          }
-          return { data: null, error: null };
-        }
-
-        setCloudBackupUpdatedAt(data.updated_at || "");
-
-        if (applyPayload) {
-          transitionApply(data.payload, { markDirty: false });
-          setCloudSyncStatus("synced");
-          setCloudNotice("已從雲端還原最近備份。");
-        } else if (!silent) {
-          setCloudNotice(`已找到最近備份（${formatTimestamp(data.updated_at)}）。`);
-        }
-
-        return { data, error: null };
-      } catch (error) {
-        const normalizedError = error instanceof Error ? error : new Error("讀取雲端備份失敗。");
-        if (!silent) {
-          setCloudNotice(normalizedError.message);
-        }
-        return { data: null, error: normalizedError };
-      } finally {
-        setIsCloudBackupLoading(false);
-      }
-    },
-    [
-      cloudSetupState,
-      cloudAuthState,
-      cloudSetupMessage,
-      transitionApply,
-      setCloudNotice,
-      setIsCloudBackupLoading,
-      setCloudBackupUpdatedAt,
-      setCloudSyncStatus,
-    ],
+  const resolveSyncPayloadForHook = useCallback(
+    (candidate) => resolveSyncPayload(candidate, scenario),
+    [scenario],
   );
 
-  const syncScenarioToCloud = useCallback(
-    async (payloadOverride, options = {}) => {
-      const safePayload = resolveSyncPayload(payloadOverride, scenario);
-      const { silent = false } = options;
-      const attemptAt = new Date().toISOString();
-      setSessionMeta(writeSessionMeta({ lastSyncAttemptAt: attemptAt }));
-      if (!supabaseReady) {
-        setCloudNotice(getSupabaseConfigHint());
-        return { error: new Error(getSupabaseConfigHint()) };
-      }
-      if (cloudSetupState !== "ready") {
-        setCloudNotice(cloudSetupMessage);
-        return { error: new Error(cloudSetupMessage) };
-      }
-      if (isOffline) {
-        setCloudSyncStatus("pending");
-        if (!silent) {
-          setCloudNotice("目前離線，這次變更尚未同步；恢復連線後會自動再試同步。");
-        }
-        return { error: new Error("offline") };
-      }
-      setCloudSyncStatus("syncing");
-      try {
-        const { data, error } = await withTimeout(
-          upsertCloudBackup({
-            payload: safePayload,
-          }),
-          12000,
-          "同步雲端備份逾時，請確認網路後再試。",
-        );
-        if (error) {
-          setCloudSyncStatus("pending");
-          setCloudNotice(error.message);
-          return { error };
-        }
-        let pendingStillMatchesSyncedPayload = true;
-        if (typeof window !== "undefined" && window.localStorage) {
-          const pendingCloudSync = readPendingCloudSync(window.localStorage);
-          pendingStillMatchesSyncedPayload = doesPendingCloudSyncMatchPayload(
-            pendingCloudSync,
-            safePayload,
-          );
-          if (pendingStillMatchesSyncedPayload) {
-            clearPendingCloudSync(window.localStorage);
-          }
-        }
-        hasPendingCloudSyncRef.current = !pendingStillMatchesSyncedPayload;
-        setCloudBackupUpdatedAt(data?.updated_at || new Date().toISOString());
-        setCloudSyncStatus(pendingStillMatchesSyncedPayload ? "synced" : "pending");
-        setSessionMeta(
-          writeSessionMeta({
-            lastSyncedAt: new Date().toISOString(),
-            lastSyncAttemptAt: attemptAt,
-          }),
-        );
-        setCloudNotice("目前內容已同步到雲端備份。");
-        return { error: null };
-      } catch (error) {
-        setCloudSyncStatus("pending");
-        const normalizedError = error instanceof Error ? error : new Error("同步雲端備份失敗。");
-        setCloudNotice(normalizedError.message);
-        return { error: normalizedError };
-      }
-    },
-    [
-      scenario,
-      supabaseReady,
-      cloudSetupState,
-      cloudSetupMessage,
-      isOffline,
-      setCloudNotice,
-      setCloudSyncStatus,
-      setCloudBackupUpdatedAt,
-    ],
+  const applyCloudPayload = useCallback(
+    (payload) => transitionApply(payload, { markDirty: false }),
+    [transitionApply],
   );
+
+  const cloud = useCloudSync({
+    resolveSyncPayload: resolveSyncPayloadForHook,
+    setSessionMeta,
+    writeSessionMeta,
+    isOffline,
+    applyCloudPayload,
+    hasPendingCloudSyncRef,
+  });
+  const {
+    authState: cloudAuthState,
+    setupState: cloudSetupState,
+    syncStatus: cloudSyncStatus,
+    userEmail: cloudUserEmail,
+    notice: cloudNotice,
+    isBackupLoading: isCloudBackupLoading,
+    isSigningIn: isSigningInWithGoogle,
+    isHydrated: isCloudHydrated,
+    cloudFeaturesEnabled,
+    cloudSetupMessage,
+    supabaseReady,
+    setSyncStatus: setCloudSyncStatus,
+    setIsHydrated: setIsCloudHydrated,
+    refreshBackup: refreshCloudBackup,
+    syncToCloud: syncScenarioToCloud,
+    signIn: signInWithGoogleHandler,
+    signOut: signOutFromSupabase,
+  } = cloud;
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -3385,71 +3128,6 @@ export default function PersonalFinanceCashflowSimulator() {
       window.removeEventListener("mousedown", onPointerDown);
     };
   }, [isExportMenuOpen]);
-
-  useEffect(() => {
-    if (!supabaseReady) {
-      setCloudAuthState("unconfigured");
-      return undefined;
-    }
-    const supabase = createFlowraSupabaseClient();
-    if (!supabase) {
-      setCloudAuthState("unconfigured");
-      return undefined;
-    }
-
-    let mounted = true;
-    setCloudAuthState("checking");
-
-    getCurrentSupabaseUser().then(({ user }) => {
-      if (mounted) {
-        setCloudAuthState(user ? "authenticated" : "anonymous");
-        setCloudUserEmail(user?.email || "");
-      }
-    });
-
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (mounted) {
-        setCloudAuthState(session?.user ? "authenticated" : "anonymous");
-        setCloudUserEmail(session?.user?.email || "");
-      }
-    });
-
-    return () => {
-      mounted = false;
-      subscription?.subscription?.unsubscribe();
-    };
-  }, [supabaseReady, setCloudAuthState, setCloudUserEmail]);
-
-  useEffect(() => {
-    if (!supabaseReady) {
-      setCloudSetupState("unconfigured");
-      return undefined;
-    }
-
-    let cancelled = false;
-    setCloudSetupState("checking");
-
-    checkFlowraCloudSetup().then(({ ready, error }) => {
-      if (cancelled) return;
-      if (ready) {
-        setCloudSetupState("ready");
-        return;
-      }
-      if (error?.message?.includes("尚未建立 Flowra 雲端資料表")) {
-        setCloudSetupState("missing");
-        setCloudNotice(error.message);
-        return;
-      }
-      setCloudSetupState("error");
-      if (error?.message) {
-        setCloudNotice(error.message);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [supabaseReady, setCloudNotice, setCloudSetupState]);
 
   useEffect(() => {
     if (
@@ -3910,32 +3588,6 @@ export default function PersonalFinanceCashflowSimulator() {
     setImportPreview(null);
   };
 
-  const signInWithGoogleHandler = async () => {
-    setIsSigningInWithGoogle(true);
-    setCloudNotice("");
-    try {
-      const redirectTo = typeof window !== "undefined" ? window.location.href : undefined;
-      const { error } = await signInWithGoogle(redirectTo);
-
-      if (error) {
-        setCloudNotice(error.message || "Google 登入失敗。");
-      }
-    } catch (error) {
-      setCloudNotice(getErrorMessage(error, "Google 登入失敗。"));
-    } finally {
-      setIsSigningInWithGoogle(false);
-    }
-  };
-
-  const signOutFromSupabase = async () => {
-    const { error } = await signOutSupabase();
-    if (error) {
-      setCloudNotice(error.message || "登出失敗。");
-      return;
-    }
-    setCloudNotice("已登出。");
-  };
-
   const focusCompositionMonth = (monthKey) => {
     setSelectedMonthKey(monthKey);
     if (compositionChartRef.current) {
@@ -3950,7 +3602,6 @@ export default function PersonalFinanceCashflowSimulator() {
   const mainGridClassName =
     "flowra-main-grid grid grid-cols-1 gap-5 xl:grid-cols-[minmax(320px,430px)_minmax(0,1fr)] xl:items-start";
   const inputGridClassName = "grid grid-cols-1 gap-3 sm:grid-cols-2";
-  const cloudFeaturesEnabled = cloudAuthState === "authenticated" && cloudSetupState === "ready";
   const cloudStatusLine = formatAutoSyncStatus({
     cloudAuthState,
     cloudSetupState,
