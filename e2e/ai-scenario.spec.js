@@ -1,5 +1,6 @@
 // e2e/ai-scenario.spec.js
 import { expect, test } from "@playwright/test";
+import { mockAiAccess } from "./helpers/mockAiAccess.js";
 
 const FAKE_DIFF = {
   kind: "diff",
@@ -19,14 +20,7 @@ const FAKE_DIFF = {
 };
 
 test("AI scenario flow: open drawer, mock response, apply, compare, adopt", async ({ page }) => {
-  // Mock supabase auth: pretend user is signed in
-  await page.addInitScript(() => {
-    window.__FLOWRA_AI_TEST = true;
-    window.localStorage.setItem(
-      "flowra-supabase-auth",
-      JSON.stringify({ access_token: "fake-jwt", user: { id: "fake-uuid" } }),
-    );
-  });
+  await mockAiAccess(page);
 
   // Intercept edge function call
   await page.route("**/functions/v1/ai-scenario", async (route) =>
@@ -40,9 +34,6 @@ test("AI scenario flow: open drawer, mock response, apply, compare, adopt", asyn
   await page.goto("/");
 
   const aiBtn = page.getByTestId("ai-trigger");
-  // 若無 supabase 設定或無登入態，按鈕 disabled，跳過後續斷言
-  if (await aiBtn.isDisabled())
-    test.skip(true, "supabase not configured or not authenticated in this environment");
 
   await aiBtn.click();
   await expect(page.getByTestId("ai-scenario-drawer")).toBeVisible();
@@ -53,9 +44,11 @@ test("AI scenario flow: open drawer, mock response, apply, compare, adopt", asyn
   await expect(page.getByText("test 車貸")).toBeVisible();
   await page.getByTestId("ai-apply-proposal").click();
 
-  await expect(page.getByTestId("scenario-compare-view")).toBeVisible();
-  await expect(page.locator("text=A 當前 vs B AI 提議")).toBeVisible();
+  const compareView = page.getByTestId("scenario-compare-view");
+  await expect(compareView).toBeVisible();
+  await expect(compareView.getByRole("banner").getByText("A 當前")).toBeVisible();
+  await expect(compareView.getByRole("banner").getByText("B AI 提議")).toBeVisible();
 
   await page.getByTestId("ai-adopt-as-main").click();
-  await expect(page.getByTestId("scenario-compare-view")).toBeHidden();
+  await expect(compareView).toBeHidden();
 });

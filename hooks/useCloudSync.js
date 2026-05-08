@@ -5,11 +5,12 @@ import {
   getCurrentSupabaseUser,
   getLatestCloudBackup,
   getSupabaseConfigHint,
-  isSupabaseConfigured,
+  isCloudSyncAvailable,
   signInWithGoogle as signInWithGoogleApi,
   signOutSupabase,
   upsertCloudBackup,
 } from "../lib/flowraSupabase.js";
+import { DEV_MODE_USER, isFlowraDevMode } from "../lib/flowraDevMode.js";
 import {
   clearPendingCloudSync,
   doesPendingCloudSyncMatchPayload,
@@ -18,16 +19,21 @@ import {
 
 // ----- cloud state machine ---------------------------------------------
 
-const cloudInitialState = {
-  authState: isSupabaseConfigured() ? "checking" : "unconfigured",
-  setupState: isSupabaseConfigured() ? "checking" : "unconfigured",
-  syncStatus: "idle",
-  userEmail: "",
-  notice: "",
-  isBackupLoading: false,
-  isSigningIn: false,
-  isHydrated: false,
-};
+function createCloudInitialState() {
+  const devMode = isFlowraDevMode();
+  const available = isCloudSyncAvailable();
+
+  return {
+    authState: devMode ? "authenticated" : available ? "checking" : "unconfigured",
+    setupState: devMode ? "ready" : available ? "checking" : "unconfigured",
+    syncStatus: "idle",
+    userEmail: devMode ? DEV_MODE_USER.email : "",
+    notice: "",
+    isBackupLoading: false,
+    isSigningIn: false,
+    isHydrated: false,
+  };
+}
 
 function reduceField(state, key, value) {
   const next = typeof value === "function" ? value(state[key]) : value;
@@ -103,11 +109,15 @@ export function useCloudSync({
   hasPendingCloudSyncRef,
   initialSyncStatus, // optional — hydrate the sync status from a persisted snapshot
 }) {
-  const supabaseReady = useMemo(() => isSupabaseConfigured(), []);
-  const [state, dispatch] = useReducer(cloudReducer, cloudInitialState, (init) => ({
-    ...init,
-    syncStatus: initialSyncStatus || init.syncStatus,
-  }));
+  const devMode = useMemo(() => isFlowraDevMode(), []);
+  const supabaseReady = useMemo(() => isCloudSyncAvailable(), []);
+  const [state, dispatch] = useReducer(cloudReducer, initialSyncStatus, (syncStatus) => {
+    const init = createCloudInitialState();
+    return {
+      ...init,
+      syncStatus: syncStatus || init.syncStatus,
+    };
+  });
 
   // Stable adapter setters — same shape as the React useState setter
   // (accept a value or an updater function), so callers don't need to
@@ -127,6 +137,11 @@ export function useCloudSync({
   // ----- Auth subscription ---------------------------------------------
 
   useEffect(() => {
+    if (devMode) {
+      setAuthState("authenticated");
+      setUserEmail(DEV_MODE_USER.email);
+      return undefined;
+    }
     if (!supabaseReady) {
       setAuthState("unconfigured");
       return undefined;
@@ -158,11 +173,15 @@ export function useCloudSync({
       mounted = false;
       subscription?.subscription?.unsubscribe();
     };
-  }, [supabaseReady, setAuthState, setUserEmail]);
+  }, [devMode, supabaseReady, setAuthState, setUserEmail]);
 
   // ----- Setup table probe ---------------------------------------------
 
   useEffect(() => {
+    if (devMode) {
+      setSetupState("ready");
+      return undefined;
+    }
     if (!supabaseReady) {
       setSetupState("unconfigured");
       return undefined;
@@ -189,7 +208,7 @@ export function useCloudSync({
     return () => {
       cancelled = true;
     };
-  }, [supabaseReady, setNotice, setSetupState]);
+  }, [devMode, supabaseReady, setNotice, setSetupState]);
 
   // ----- Derived ------------------------------------------------------
 
@@ -343,6 +362,10 @@ export function useCloudSync({
   );
 
   const signIn = useCallback(async () => {
+    if (devMode) {
+      setNotice("開發者模式已啟用，無需登入。");
+      return;
+    }
     setIsSigningIn(true);
     setNotice("");
     try {
@@ -354,16 +377,20 @@ export function useCloudSync({
     } finally {
       setIsSigningIn(false);
     }
-  }, [setIsSigningIn, setNotice]);
+  }, [devMode, setIsSigningIn, setNotice]);
 
   const signOut = useCallback(async () => {
+    if (devMode) {
+      setNotice("開發者模式中固定為已登入，可直接測試雲端功能。");
+      return;
+    }
     const { error } = await signOutSupabase();
     if (error) {
       setNotice(error.message || "登出失敗。");
       return;
     }
     setNotice("已登出。");
-  }, [setNotice]);
+  }, [devMode, setNotice]);
 
   return {
     // state — destructured for ergonomic consumer access.
@@ -379,6 +406,7 @@ export function useCloudSync({
     cloudFeaturesEnabled,
     cloudSetupMessage,
     supabaseReady,
+    isDevMode: devMode,
     // setters needed for orchestration in the parent component
     setNotice,
     setSyncStatus,
