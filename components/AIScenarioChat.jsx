@@ -2,7 +2,7 @@
 // Chat drawer for AI scenario simulation. Pure presentational — parent owns
 // all state (open, history, loading, currentProposal, error) and callbacks.
 
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 
 const SAMPLE_PROMPTS = [
   "明年 6 月買車：60 萬車貸 60 期 3% 年息，每月保險約 1500",

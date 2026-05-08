@@ -2,6 +2,7 @@
 // Side-by-side comparison of A (current) and B (AI-proposed) projection rows.
 // Diff summary cards on top, monthly table in middle, overlaid line chart at bottom.
 
+import React from "react";
 import {
   LineChart,
   Line,
