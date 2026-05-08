@@ -139,6 +139,20 @@ supabase/migrations/20260506123000_flowra_single_backup.sql
 - 同步最新備份
 - 還原最近備份
 
+## AI 情境模擬
+
+Flowra 提供「AI 情境比較」功能：用自然語言描述假設情境（買車、換工作、退休），AI 會回傳一份結構化情境修改提議，前端套用後與當前情境並排比較。
+
+需求：
+
+- 已啟用 Supabase（同 cloud sync）
+- 已登入
+- 在 Supabase 設定 secret：`ANTHROPIC_API_KEY`
+- 部署 Edge Function：`supabase functions deploy ai-scenario`
+- 套用 migration：`supabase/migrations/20260508120000_flowra_ai_usage_log.sql`
+
+每位使用者每日上限 20 次呼叫。AI 不會修改你的起始資產（startingTwd / jpyCash）；它只能新增/修改/移除一次性項目、分期，與部分基本欄位（薪水、補助、房租、生活費、學貸、月份範圍）。
+
 ## 目前產品行為
 
 這個版本是依照目前需求收斂後的版本，幾點需要先知道：
