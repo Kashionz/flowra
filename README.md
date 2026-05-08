@@ -58,24 +58,38 @@ npm run build:check
 .
 ├─ components/
 │  └─ ui/
-│     └─ chart.jsx
-├─ docs/
-│  └─ superpowers/
-│     ├─ plans/
-│     └─ specs/
+│     └─ chart.jsx              # recharts wrapper + CHART_THEME_VARS
+├─ hooks/
+│  ├─ useCloudSync.js           # Supabase auth + 同步狀態機
+│  └─ useScenarioHistory.js     # Undo / redo（包 lib/historyStack）
 ├─ lib/
-│  ├─ flowraSupabase.js
-│  ├─ templates/
-│  └─ utils.js
+│  ├─ clampViewport.js          # tooltip / dropdown 視窗邊界 clamp
+│  ├─ dataManagementOptions.js  # 匯入 / 匯出 / 同步選單常數
+│  ├─ expenseCategories.js      # 支出分類 metadata
+│  ├─ finance.js                # buildProjection、monthlyPayment、純函式
+│  ├─ flowraSupabase.js         # Supabase client + auth / sync helper
+│  ├─ historyStack.js           # 上限 50 步的 past / future 堆疊
+│  ├─ hydrationNotice.js        # 雲端 vs 本機 banner 決策
+│  ├─ importDiff.js             # JSON 匯入預覽差異
+│  ├─ initialBoot.js            # readInitialBoot + isScenarioEmpty
+│  ├─ itemIds.js                # 一次性 / 分期項目 id 生成
+│  ├─ jpyExchangeRate.js        # JPY → TWD 匯率快取與 fetch
+│  ├─ numberField.js            # 零值輸入正規化、數字步進
+│  ├─ scenarioPersistence.js    # localStorage 草稿 + 雲端 hydration 決策
+│  ├─ templates/index.js        # 預設空白情境
+│  └─ utils.js                  # cn() class merge
+├─ scripts/                     # 部署 / 後端檢查腳本
 ├─ styles/
-│  ├─ flowra.css
-│  └─ flowra.tailwind.css
+│  ├─ flowra.css                # 由 pnpm build:css 產出，勿手改
+│  └─ flowra.tailwind.css       # Tailwind 來源
 ├─ supabase/
 │  └─ migrations/
 ├─ index.html
 ├─ main.jsx
 └─ personal_finance_cashflow_simulator.jsx
 ```
+
+每個 `lib/*.js` 都有對應的 `lib/*.test.js`（`node --test` 執行，目前共 111 個 tests）；hooks 透過 lib/ 的純函式來測。
 
 ## 環境變數
 
