@@ -2921,12 +2921,6 @@ export default function PersonalFinanceCashflowSimulator() {
   );
 
   // ── AI scenario handlers ─────────────────────────────────────────────────
-  const aiDisabledReason = !supabaseReady
-    ? "雲端尚未啟用，無法使用 AI"
-    : cloudAuthState !== "authenticated"
-      ? "請先登入才能使用 AI 模擬"
-      : "";
-
   const handleAiSend = useCallback(
     async (text) => {
       setAiError("");
@@ -3018,6 +3012,12 @@ export default function PersonalFinanceCashflowSimulator() {
     signIn: signInWithGoogleHandler,
     signOut: signOutFromSupabase,
   } = cloud;
+
+  const aiDisabledReason = !supabaseReady
+    ? "雲端尚未啟用，無法使用 AI"
+    : cloudAuthState !== "authenticated"
+      ? "請先登入才能使用 AI 模擬"
+      : "";
 
   // Persist the latest "lastOpenedAt" timestamp on mount. This is a
   // pure side effect to localStorage — no state needs to track this
