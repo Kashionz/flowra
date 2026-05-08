@@ -2,11 +2,13 @@
 // Proxies user-prompted scenario diff requests to Anthropic, with auth + rate-limit.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.105.3";
+import { normalizeAiConversationHistory } from "./aiScenarioHistory.js";
 
 const DAILY_QUOTA = 20;
-const MODEL = "claude-sonnet-4-6";
+const MODEL = "claude-sonnet-4-20250514";
 const MAX_TOKENS = 2048;
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const RETRYABLE_ANTHROPIC_STATUS = new Set([429, 500, 502, 503, 504, 529]);
 
 const ALLOWED_OPS = [
   "add_one_time", "update_one_time", "remove_one_time",
@@ -78,7 +80,12 @@ const TOOLS = [
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      "access-control-allow-headers":
+        "authorization, x-client-info, apikey, content-type",
+    },
   });
 }
 
@@ -88,7 +95,8 @@ function corsResponse() {
     headers: {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "authorization, content-type",
+      "access-control-allow-headers":
+        "authorization, x-client-info, apikey, content-type",
     },
   });
 }
@@ -111,25 +119,85 @@ function sanitizeDiff(toolInput: any) {
   return { value: toolInput };
 }
 
+function getBearerToken(req: Request) {
+  const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+  const [scheme, token] = authHeader.split(" ");
+  if (scheme !== "Bearer" || !token) return "";
+  return token;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callAnthropic(messages: { role: string; content: string }[], anthropicKey: string) {
+  let lastStatus = 502;
+  let lastError = "model failed";
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const aiRes = await fetch(ANTHROPIC_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+        tools: TOOLS,
+        tool_choice: { type: "any" },
+        messages,
+      }),
+    });
+
+    if (aiRes.ok) {
+      return { data: await aiRes.json(), error: null };
+    }
+
+    lastStatus = aiRes.status;
+    const text = await aiRes.text();
+    console.error("anthropic error", aiRes.status, text);
+
+    try {
+      const parsed = JSON.parse(text);
+      lastError = parsed?.error?.type || parsed?.error?.message || text || "model failed";
+    } catch {
+      lastError = text || "model failed";
+    }
+
+    if (!RETRYABLE_ANTHROPIC_STATUS.has(aiRes.status) || attempt === 2) {
+      break;
+    }
+
+    await sleep(400 * (attempt + 1));
+  }
+
+  return { data: null, error: { status: lastStatus, message: lastError } };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsResponse();
   if (req.method !== "POST") return jsonResponse({ error: "method not allowed" }, 405);
 
-  const auth = req.headers.get("authorization") || "";
-  const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const jwt = getBearerToken(req);
   if (!jwt) return jsonResponse({ error: "unauthorized" }, 401);
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const publishableKey =
+    Deno.env.get("SB_PUBLISHABLE_KEY") || Deno.env.get("SUPABASE_ANON_KEY") || "";
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!publishableKey) return jsonResponse({ error: "publishable key unavailable" }, 503);
   if (!anthropicKey) return jsonResponse({ error: "model unavailable" }, 503);
 
-  const userClient = createClient(supabaseUrl, serviceKey, {
-    global: { headers: { authorization: `Bearer ${jwt}` } },
+  const userClient = createClient(supabaseUrl, publishableKey, {
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
   });
-  const { data: userData, error: userErr } = await userClient.auth.getUser(jwt);
-  if (userErr || !userData?.user) return jsonResponse({ error: "unauthorized" }, 401);
-  const userId = userData.user.id;
+  const { data: claimsData, error: claimsErr } = await userClient.auth.getClaims(jwt);
+  const userId = claimsData?.claims?.sub;
+  if (claimsErr || !userId) return jsonResponse({ error: "unauthorized" }, 401);
 
   const admin = createClient(supabaseUrl, serviceKey);
   const day = utc8DayKey();
@@ -152,34 +220,18 @@ Deno.serve(async (req) => {
   }
 
   const messages = [
-    ...(Array.isArray(history) ? history : []),
+    ...normalizeAiConversationHistory(history),
     {
       role: "user",
       content: `當前 scenario JSON：\n${JSON.stringify(scenario)}\n\n使用者描述：${userMessage}`,
     },
   ];
 
-  const aiRes = await fetch(ANTHROPIC_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-      tools: TOOLS,
-      messages,
-    }),
-  });
-  if (!aiRes.ok) {
-    const txt = await aiRes.text();
-    console.error("anthropic error", aiRes.status, txt);
-    return jsonResponse({ error: "model failed" }, 502);
+  const { data: aiBody, error: aiError } = await callAnthropic(messages, anthropicKey);
+  if (aiError) {
+    const status = aiError.status === 429 || aiError.status === 529 ? 503 : 502;
+    return jsonResponse({ error: aiError.message || "model failed" }, status);
   }
-  const aiBody = await aiRes.json();
 
   const toolUse = (aiBody.content || []).find((c: any) => c.type === "tool_use");
   if (!toolUse) {
