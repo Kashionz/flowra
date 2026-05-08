@@ -1276,6 +1276,25 @@ function getButtonVariantStyles(variant) {
       active: { background: "#cbd5e1" },
     };
   }
+  if (variant === "floatingAiButton") {
+    return {
+      base: styles.floatingAiButton,
+      hover: {
+        background: "#f8fafc",
+        border: "1px solid #94a3b8",
+        boxShadow: "0 20px 40px rgba(15, 23, 42, 0.14), 0 6px 14px rgba(15, 23, 42, 0.08)",
+      },
+      focus: {
+        outline: "3px solid rgba(148, 163, 184, 0.32)",
+        outlineOffset: "3px",
+      },
+      active: {
+        background: "#f1f5f9",
+        border: "1px solid #94a3b8",
+        boxShadow: "0 12px 24px rgba(15, 23, 42, 0.12), 0 3px 8px rgba(15, 23, 42, 0.06)",
+      },
+    };
+  }
   if (variant === "dropdownItem") {
     return {
       base: styles.dropdownItem,
@@ -2471,6 +2490,23 @@ const styles = {
     transition: INTERACTIVE_TRANSITION,
     willChange: INTERACTIVE_WILL_CHANGE,
   },
+  floatingAiButton: {
+    position: "fixed",
+    right: "18px",
+    bottom: "calc(env(safe-area-inset-bottom, 0px) + 18px)",
+    zIndex: 35,
+    width: "64px",
+    height: "64px",
+    padding: 0,
+    borderRadius: "999px",
+    border: "1px solid #cbd5e1",
+    background: "#ffffff",
+    color: "#0f172a",
+    boxShadow: "0 16px 36px rgba(15, 23, 42, 0.12), 0 4px 12px rgba(15, 23, 42, 0.06)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   switchTrack: {
     width: "48px",
     height: "28px",
@@ -2940,7 +2976,7 @@ export default function PersonalFinanceCashflowSimulator() {
           setAiProposal(res.diff);
         }
       } catch (e) {
-        setAiError(e.message || "AI 模擬失敗");
+        setAiError(e.message || "AI 輔助分析失敗");
       } finally {
         setAiLoading(false);
       }
@@ -2954,7 +2990,7 @@ export default function PersonalFinanceCashflowSimulator() {
       const scenarioB = applyDiff(scenario, aiProposal);
       const projB = buildProjection(scenarioB, jpyExchangeRate.rate);
       const rowsB = Array.isArray(projB) ? projB : projB.rows;
-      setCompareB({ scenario: scenarioB, rows: rowsB });
+      setCompareB({ scenario: scenarioB, rows: rowsB, summary: aiProposal.summary || "" });
       setAiProposal(null);
       setAiOpen(false);
     } catch (e) {
@@ -2963,6 +2999,11 @@ export default function PersonalFinanceCashflowSimulator() {
   }, [scenario, aiProposal, jpyExchangeRate.rate]);
 
   const handleAiDiscard = useCallback(() => setAiProposal(null), []);
+  const handleAiNewChat = useCallback(() => {
+    setAiHistory([]);
+    setAiProposal(null);
+    setAiError("");
+  }, []);
   const handleLeaveCompare = useCallback(() => setCompareB(null), []);
   const handleAdoptB = useCallback(() => {
     if (!compareB) return;
@@ -3013,10 +3054,11 @@ export default function PersonalFinanceCashflowSimulator() {
     signOut: signOutFromSupabase,
   } = cloud;
 
+  const aiAvailable = supabaseReady && cloudAuthState === "authenticated";
   const aiDisabledReason = !supabaseReady
-    ? "雲端尚未啟用，無法使用 AI"
+    ? "雲端尚未啟用，無法使用 AI 輔助分析"
     : cloudAuthState !== "authenticated"
-      ? "請先登入才能使用 AI 模擬"
+      ? "請先登入才能使用 AI 輔助分析"
       : "";
 
   // Persist the latest "lastOpenedAt" timestamp on mount. This is a
@@ -3807,7 +3849,7 @@ export default function PersonalFinanceCashflowSimulator() {
           </div>
         ) : null}
 
-        {hydrationNotice ? (
+        {hydrationNotice && hydrationNotice.source !== "cloud" ? (
           <div
             className="flowra-no-print flowra-no-report-export"
             style={{
@@ -3827,36 +3869,13 @@ export default function PersonalFinanceCashflowSimulator() {
             role="status"
           >
             <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 }}>
-              {hydrationNotice.source === "cloud" ? (
-                <>
-                  <strong>已採用雲端版本</strong>
-                  <span style={{ color: "#475569", fontSize: "12px" }}>
-                    雲端最後更新 {formatTimestamp(hydrationNotice.cloudUpdatedAt)}
-                    ；本機草稿已先保留供你還原。
-                  </span>
-                </>
-              ) : (
-                <>
-                  <strong>保留本機未同步編輯</strong>
-                  <span style={{ color: "#475569", fontSize: "12px" }}>
-                    你的本機版本（{formatTimestamp(hydrationNotice.pendingUpdatedAt)}）比雲端新，
-                    雲端會在下次同步時被覆蓋。
-                  </span>
-                </>
-              )}
+              <strong>保留本機未同步編輯</strong>
+              <span style={{ color: "#475569", fontSize: "12px" }}>
+                你的本機版本（{formatTimestamp(hydrationNotice.pendingUpdatedAt)}）比雲端新，
+                雲端會在下次同步時被覆蓋。
+              </span>
             </div>
             <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-              {hydrationNotice.source === "cloud" && hydrationNotice.savedDraft ? (
-                <InteractiveButton
-                  variant="smallButton"
-                  onClick={() => {
-                    transitionApply(hydrationNotice.savedDraft);
-                    setHydrationNotice(null);
-                  }}
-                >
-                  改用本機草稿
-                </InteractiveButton>
-              ) : null}
               <InteractiveButton variant="smallButton" onClick={() => setHydrationNotice(null)}>
                 關閉
               </InteractiveButton>
@@ -4604,14 +4623,6 @@ export default function PersonalFinanceCashflowSimulator() {
                   }
                   return null;
                 })}
-                <InteractiveButton
-                  data-testid="ai-trigger"
-                  onClick={() => setAiOpen(true)}
-                  disabled={!cloudFeaturesEnabled}
-                  title={aiDisabledReason}
-                >
-                  AI 模擬
-                </InteractiveButton>
               </div>
               <input
                 ref={fileInputRef}
@@ -5186,6 +5197,36 @@ export default function PersonalFinanceCashflowSimulator() {
           </div>
         ) : null}
       </div>
+      {!aiOpen && !compareB ? (
+        <InteractiveButton
+          data-testid="ai-trigger"
+          variant="floatingAiButton"
+          onClick={() => setAiOpen(true)}
+          disabled={!cloudFeaturesEnabled}
+          title={aiDisabledReason}
+          aria-label={cloudFeaturesEnabled ? "開啟 AI 輔助分析" : aiDisabledReason}
+        >
+          <span aria-hidden="true" style={{ display: "inline-flex", color: "#2563eb" }}>
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3.5" y="5" width="6.5" height="13" rx="2" />
+              <rect x="14" y="5" width="6.5" height="13" rx="2" />
+              <path d="M7 9.5h0.01" />
+              <path d="M17.25 9.5h0.01" />
+              <path d="M6.2 14c1-.9 1.95-1.35 2.8-1.35 0.84 0 1.64.3 2.4.9" />
+              <path d="M12.6 13.55c.74-.6 1.54-.9 2.4-.9.84 0 1.8.45 2.8 1.35" />
+            </svg>
+          </span>
+        </InteractiveButton>
+      ) : null}
       <AIScenarioChat
         open={aiOpen}
         onClose={() => setAiOpen(false)}
@@ -5197,6 +5238,7 @@ export default function PersonalFinanceCashflowSimulator() {
         onSend={handleAiSend}
         onApply={handleAiApply}
         onDiscardProposal={handleAiDiscard}
+        onNewChat={handleAiNewChat}
         disabled={!cloudFeaturesEnabled}
         disabledReason={aiDisabledReason}
       />
@@ -5204,6 +5246,7 @@ export default function PersonalFinanceCashflowSimulator() {
         <ScenarioCompareView
           rowsA={rows}
           rowsB={compareB.rows}
+          proposalSummary={compareB.summary}
           onAdopt={handleAdoptB}
           onLeave={handleLeaveCompare}
         />
