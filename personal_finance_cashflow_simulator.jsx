@@ -82,7 +82,6 @@ import {
 } from "recharts";
 
 const SCHEMA_VERSION = 1;
-const DEFAULT_TEMPLATE_KEY = "current";
 const LEGACY_SCENARIO_NAME = "有房貸租屋族";
 const RENAMED_SCENARIO_NAME = "目前情境";
 const STORAGE_SESSION_META_KEY = "flowra.cashflow.session-meta";
@@ -106,9 +105,9 @@ function normalizeScenarioMeta(meta = {}, fallbackMeta = {}) {
   };
 }
 
-function createTemplateScenario(templateKey = DEFAULT_TEMPLATE_KEY) {
+function createDefaultScenario() {
   const baseMonth = currentBaseMonth();
-  const template = TEMPLATE_DEFINITIONS[templateKey] || TEMPLATE_DEFINITIONS[DEFAULT_TEMPLATE_KEY];
+  const template = TEMPLATE_DEFINITIONS.current;
   return {
     schemaVersion: SCHEMA_VERSION,
     meta: {
@@ -149,10 +148,6 @@ function createTemplateScenario(templateKey = DEFAULT_TEMPLATE_KEY) {
       startMonth: addMonths(baseMonth, item.startOffset),
     })),
   };
-}
-
-function createDefaultScenario() {
-  return createTemplateScenario(DEFAULT_TEMPLATE_KEY);
 }
 
 function cloneScenario(scenario, patch = {}) {
