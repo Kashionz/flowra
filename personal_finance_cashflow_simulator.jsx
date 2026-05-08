@@ -65,6 +65,10 @@ import {
   writePendingCloudSync,
 } from "./lib/scenarioPersistence.js";
 import { createFlowraSupabaseClient } from "./lib/flowraSupabase.js";
+import AIScenarioChat from "./components/AIScenarioChat.jsx";
+import ScenarioCompareView from "./components/ScenarioCompareView.jsx";
+import { applyDiff } from "./lib/aiScenarioDiff.js";
+import { callAiScenario } from "./lib/aiScenarioClient.js";
 import {
   LineChart as RechartsLineChart,
   Line,
@@ -2817,6 +2821,13 @@ export default function PersonalFinanceCashflowSimulator() {
   const [bulkInstallmentText, setBulkInstallmentText] = useState("");
   const [bulkInstallmentErrors, setBulkInstallmentErrors] = useState([]);
   const [bulkInstallmentPreview, setBulkInstallmentPreview] = useState([]);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiHistory, setAiHistory] = useState([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiProposal, setAiProposal] = useState(null);
+  const [aiError, setAiError] = useState("");
+  const [aiQuota, setAiQuota] = useState(null);
+  const [compareB, setCompareB] = useState(null);
   const monthRefs = useRef({});
   const fileInputRef = useRef(null);
   const cloudHydratedRef = useRef(false);
@@ -2908,6 +2919,63 @@ export default function PersonalFinanceCashflowSimulator() {
     (candidate) => resolveSyncPayload(candidate, scenario),
     [scenario],
   );
+
+  // ── AI scenario handlers ─────────────────────────────────────────────────
+  const aiDisabledReason = !supabaseReady
+    ? "雲端尚未啟用，無法使用 AI"
+    : cloudAuthState !== "authenticated"
+      ? "請先登入才能使用 AI 模擬"
+      : "";
+
+  const handleAiSend = useCallback(
+    async (text) => {
+      setAiError("");
+      setAiHistory((h) => [...h, { role: "user", content: text }]);
+      setAiLoading(true);
+      try {
+        const supa = createFlowraSupabaseClient();
+        const res = await callAiScenario(supa, {
+          scenario,
+          userMessage: text,
+          history: aiHistory,
+        });
+        setAiQuota({ used: res.used, quota: res.quota });
+        if (res.kind === "clarify") {
+          setAiHistory((h) => [...h, { role: "assistant", questions: res.questions }]);
+        } else if (res.kind === "diff") {
+          setAiProposal(res.diff);
+        }
+      } catch (e) {
+        setAiError(e.message || "AI 模擬失敗");
+      } finally {
+        setAiLoading(false);
+      }
+    },
+    [scenario, aiHistory],
+  );
+
+  const handleAiApply = useCallback(() => {
+    try {
+      if (!aiProposal) return;
+      const scenarioB = applyDiff(scenario, aiProposal);
+      const projB = buildProjection(scenarioB, jpyExchangeRate.rate);
+      const rowsB = Array.isArray(projB) ? projB : projB.rows;
+      setCompareB({ scenario: scenarioB, rows: rowsB });
+      setAiProposal(null);
+      setAiOpen(false);
+    } catch (e) {
+      setAiError(`AI 提議無法套用：${e.message}`);
+    }
+  }, [scenario, aiProposal, jpyExchangeRate.rate]);
+
+  const handleAiDiscard = useCallback(() => setAiProposal(null), []);
+  const handleLeaveCompare = useCallback(() => setCompareB(null), []);
+  const handleAdoptB = useCallback(() => {
+    if (!compareB) return;
+    transitionApply(compareB.scenario);
+    setCompareB(null);
+  }, [compareB, transitionApply]);
+  // ── end AI handlers ──────────────────────────────────────────────────────
 
   const applyCloudPayload = useCallback(
     (payload) => transitionApply(payload, { markDirty: false }),
@@ -4536,6 +4604,14 @@ export default function PersonalFinanceCashflowSimulator() {
                   }
                   return null;
                 })}
+                <InteractiveButton
+                  data-testid="ai-trigger"
+                  onClick={() => setAiOpen(true)}
+                  disabled={!cloudFeaturesEnabled}
+                  title={aiDisabledReason}
+                >
+                  AI 模擬
+                </InteractiveButton>
               </div>
               <input
                 ref={fileInputRef}
@@ -5110,6 +5186,28 @@ export default function PersonalFinanceCashflowSimulator() {
           </div>
         ) : null}
       </div>
+      <AIScenarioChat
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        history={aiHistory}
+        loading={aiLoading}
+        proposal={aiProposal}
+        error={aiError}
+        quota={aiQuota}
+        onSend={handleAiSend}
+        onApply={handleAiApply}
+        onDiscardProposal={handleAiDiscard}
+        disabled={!cloudFeaturesEnabled}
+        disabledReason={aiDisabledReason}
+      />
+      {compareB && (
+        <ScenarioCompareView
+          rowsA={rows}
+          rowsB={compareB.rows}
+          onAdopt={handleAdoptB}
+          onLeave={handleLeaveCompare}
+        />
+      )}
     </div>
   );
 }
