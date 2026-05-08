@@ -5,6 +5,8 @@ node_modules/
 dist/
 .playwright-cli/
 .playwright-mcp/
+playwright-report/
+test-results/
 .superpowers/
 flowra-current-full.png
 docs/superpowers/

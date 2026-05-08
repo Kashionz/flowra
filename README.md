@@ -52,6 +52,22 @@ npm run build:check
 
 這個指令會用 `esbuild` 檢查主檔是否可正常 bundle。
 
+## 測試
+
+```bash
+pnpm test          # node --test，跑 lib/*.test.js（純函式單元測試，~111 tests）
+pnpm test:e2e      # Playwright，跑 e2e/*.spec.js（desktop + iPhone SE viewport）
+pnpm test:e2e:ui   # Playwright UI mode，互動式除錯
+```
+
+第一次跑 e2e 前需要先安裝瀏覽器：
+
+```bash
+pnpm exec playwright install chromium
+```
+
+CI 會自動跑兩種測試。
+
 ## 專案結構
 
 ```text
