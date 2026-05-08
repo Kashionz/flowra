@@ -3,6 +3,9 @@
 // all state (open, history, loading, currentProposal, error) and callbacks.
 
 import React, { useEffect, useRef } from "react";
+import { shouldSubmitTextareaOnEnter } from "../lib/enterKeySubmission.js";
+import { getAiDrawerMotion } from "../lib/aiDrawerTransition.js";
+import { getAiComposerButtonTone } from "../lib/aiComposerStyles.js";
 
 const SAMPLE_PROMPTS = [
   {
@@ -192,11 +195,54 @@ function ThinkingDots() {
   );
 }
 
+const ACTION_BUTTON_STYLE = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+  width: 36,
+  height: 36,
+  minWidth: 36,
+  borderRadius: 999,
+};
+
+const SEND_BUTTON_STYLE = {
+  ...ACTION_BUTTON_STYLE,
+  background: "#0284c7",
+  color: "#ffffff",
+  border: "1px solid #0284c7",
+  transition:
+    "transform 180ms cubic-bezier(0.32, 0.72, 0, 1), background-color 180ms ease, border-color 180ms ease, opacity 180ms ease",
+};
+
+const STOP_BUTTON_STYLE = {
+  ...ACTION_BUTTON_STYLE,
+  background: "#dc2626",
+  color: "#ffffff",
+  border: "1px solid #dc2626",
+  transition:
+    "transform 180ms cubic-bezier(0.32, 0.72, 0, 1), background-color 180ms ease, border-color 180ms ease, opacity 180ms ease",
+};
+
+const COMPOSER_SHELL_STYLE = {
+  borderRadius: 20,
+  border: "1px solid #cbd5e1",
+  background: "#ffffff",
+  padding: "3px",
+  transition: "border-color 180ms ease, box-shadow 180ms ease",
+  boxShadow: "0 0 0 0 rgba(2, 132, 199, 0)",
+};
+
+const COMPOSER_INPUT_STYLE = {
+  padding: "10px 14px 6px",
+};
+
 export default function AIScenarioChat({
   open,
   onClose,
   history,
   loading,
+  draftMessage,
   proposal,
   error,
   quota,
@@ -204,15 +250,23 @@ export default function AIScenarioChat({
   onApply,
   onDiscardProposal,
   onNewChat,
+  onStop,
   disabled,
   disabledReason,
 }) {
   const inputRef = useRef(null);
+  const isComposingRef = useRef(false);
   const scrollRef = useRef(null);
 
   useEffect(() => {
     if (open && !loading) inputRef.current?.focus();
   }, [open, loading]);
+
+  useEffect(() => {
+    if (!open) {
+      isComposingRef.current = false;
+    }
+  }, [open]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -229,40 +283,30 @@ export default function AIScenarioChat({
     return () => window.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  if (!open) return null;
-
   const quotaPercent = quota?.quota
     ? Math.min(100, Math.round((quota.used / quota.quota) * 100))
     : 0;
   const quotaWarn = quotaPercent >= 80;
   const hasContent = history.length > 0 || proposal || error;
+  const motion = getAiDrawerMotion({ open });
+  const composerButtonTone = getAiComposerButtonTone({ loading, disabled });
 
   return (
     <>
       <div
         onClick={onClose}
         className="fixed inset-0 bg-slate-900/30 z-30 backdrop-blur-[1px]"
-        style={{ animation: "flowra-fade-in 200ms ease-out" }}
+        style={motion.overlayStyle}
         aria-hidden="true"
       />
       <aside
         data-testid="ai-scenario-drawer"
         className="fixed top-0 right-0 h-full w-full sm:w-[420px] bg-slate-50 border-l border-slate-200 shadow-xl z-40 flex flex-col"
-        style={{ animation: "flowra-slide-in-right 280ms cubic-bezier(0.32, 0.72, 0, 1)" }}
+        style={motion.drawerStyle}
         role="dialog"
         aria-label="AI 輔助分析"
+        aria-hidden={!open}
       >
-        <style>{`
-          @keyframes flowra-slide-in-right {
-            from { transform: translateX(100%); }
-            to { transform: translateX(0); }
-          }
-          @keyframes flowra-fade-in {
-            from { opacity: 0; }
-            to { opacity: 1; }
-          }
-        `}</style>
-
         <header className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-white">
           <div className="flex items-center gap-2">
             <span className="text-sky-600" aria-hidden="true">
@@ -323,8 +367,10 @@ export default function AIScenarioChat({
           {!disabled && history.length === 0 && !proposal && (
             <div className="space-y-3">
               <div className="text-center py-2">
-                <p className="text-sm text-slate-700 font-medium">描述你的假設情境</p>
-                <p className="text-xs text-slate-500 mt-1">AI 會回到一份可預覽的 B 情境提議</p>
+                <p className="text-sm text-slate-700 font-medium">說說你想模擬的變化</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  AI 會先幫你整理，再做出一份可預覽的 B 情境
+                </p>
               </div>
               <p className="text-[11px] uppercase tracking-wide text-slate-400 px-1">範例</p>
               <div className="space-y-2">
@@ -368,9 +414,18 @@ export default function AIScenarioChat({
           ))}
           {loading && (
             <div className="flex justify-start">
-              <div className="text-sm bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-3 py-2 text-slate-500 flex items-center gap-2">
-                <ThinkingDots />
-                <span className="text-xs">AI 正在分析…</span>
+              <div className="max-w-[85%] text-sm bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-3 py-2 text-slate-600">
+                {draftMessage ? (
+                  <p data-testid="ai-draft-message" className="whitespace-pre-line leading-relaxed">
+                    {draftMessage}
+                  </p>
+                ) : (
+                  <p className="text-xs">AI 正在分析…</p>
+                )}
+                <div className="mt-2 flex items-center gap-2 text-slate-500">
+                  <ThinkingDots />
+                  <span className="text-xs">AI 正在分析…</span>
+                </div>
               </div>
             </div>
           )}
@@ -394,50 +449,104 @@ export default function AIScenarioChat({
             onSend(v);
           }}
         >
-          <textarea
-            ref={inputRef}
-            rows={2}
-            placeholder={
-              disabled ? disabledReason : "描述假設情境…（Enter 送出，Shift+Enter 換行）"
-            }
-            disabled={disabled || loading}
-            data-testid="ai-input"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+          <div
+            className="focus-within:border-sky-400"
+            style={{
+              ...COMPOSER_SHELL_STYLE,
+              borderColor: disabled ? "#e2e8f0" : undefined,
+              boxShadow: disabled ? "0 0 0 0 rgba(2, 132, 199, 0)" : undefined,
+            }}
+          >
+            <textarea
+              ref={inputRef}
+              rows={2}
+              placeholder={disabled ? disabledReason : "輸入想測試的情境"}
+              disabled={disabled || loading}
+              data-testid="ai-input"
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false;
+              }}
+              onKeyDown={(e) => {
+                if (!shouldSubmitTextareaOnEnter(e, { isComposing: isComposingRef.current }))
+                  return;
+
                 e.preventDefault();
                 const v = e.currentTarget.value.trim();
                 if (!v || disabled || loading) return;
                 e.currentTarget.value = "";
                 onSend(v);
-              }
-            }}
-            className="w-full text-sm p-2.5 border border-slate-200 rounded-lg resize-none focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:bg-slate-50 disabled:text-slate-400"
-          />
-          <div className="flex justify-between items-center gap-3">
-            <div className="flex-1 min-w-0">
-              {quota && (
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 h-1 bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${quotaWarn ? "bg-amber-400" : "bg-sky-400"}`}
-                      style={{ width: `${quotaPercent}%` }}
-                    />
+              }}
+              className="w-full min-h-[72px] text-sm leading-6 bg-transparent border-0 rounded-2xl resize-none focus:outline-none disabled:text-slate-400"
+              style={COMPOSER_INPUT_STYLE}
+            />
+            <div className="flex items-end justify-between gap-3 px-1 pt-1 pb-1">
+              <div className="flex-1 min-w-0 pb-1">
+                {quota ? (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${quotaWarn ? "bg-amber-400" : "bg-sky-400"}`}
+                        style={{ width: `${quotaPercent}%` }}
+                      />
+                    </div>
+                    <span
+                      className={`text-[11px] whitespace-nowrap ${quotaWarn ? "text-amber-600" : "text-slate-400"}`}
+                    >
+                      {quota.used}/{quota.quota}
+                    </span>
                   </div>
-                  <span
-                    className={`text-[11px] whitespace-nowrap ${quotaWarn ? "text-amber-600" : "text-slate-400"}`}
-                  >
-                    {quota.used}/{quota.quota}
-                  </span>
-                </div>
-              )}
+                ) : null}
+              </div>
+              <button
+                type={loading ? "button" : "submit"}
+                onClick={loading ? onStop : undefined}
+                data-testid={loading ? "ai-stop" : "ai-send"}
+                disabled={!loading && disabled}
+                aria-label={composerButtonTone.label}
+                title={composerButtonTone.label}
+                className="group text-sm font-medium disabled:cursor-not-allowed"
+                style={{
+                  ...(loading ? STOP_BUTTON_STYLE : SEND_BUTTON_STYLE),
+                  background: composerButtonTone.background,
+                  borderColor: composerButtonTone.borderColor,
+                  color: composerButtonTone.textColor,
+                  borderStyle: "solid",
+                  transform: "translateY(0) scale(1)",
+                }}
+              >
+                <span className="inline-flex items-center justify-center transition-transform duration-200 group-hover:-translate-y-0.5 group-active:translate-y-0 group-active:scale-[0.94]">
+                  {loading ? (
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <rect x="7" y="7" width="10" height="10" rx="2" />
+                    </svg>
+                  ) : (
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M22 2 11 13" />
+                      <path d="m22 2-7 20-4-9-9-4Z" />
+                    </svg>
+                  )}
+                </span>
+              </button>
             </div>
-            <button
-              type="submit"
-              disabled={disabled || loading}
-              className="px-4 py-1.5 text-sm font-medium bg-sky-600 text-white rounded-lg disabled:bg-slate-300 disabled:cursor-not-allowed hover:bg-sky-700 transition-colors"
-            >
-              {loading ? "送出中…" : "送出"}
-            </button>
           </div>
         </form>
       </aside>

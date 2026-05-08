@@ -69,6 +69,7 @@ import AIScenarioChat from "./components/AIScenarioChat.jsx";
 import ScenarioCompareView from "./components/ScenarioCompareView.jsx";
 import { applyDiff } from "./lib/aiScenarioDiff.js";
 import { callAiScenario } from "./lib/aiScenarioClient.js";
+import { getAiStreamingStatusText } from "./lib/aiStreamingStatus.js";
 import {
   LineChart as RechartsLineChart,
   Line,
@@ -94,6 +95,7 @@ const SESSION_META_DEFAULT = {
   lastSyncedAt: "",
   lastSyncAttemptAt: "",
 };
+const AI_DIFF_READY_MESSAGE = "我先整理成一份 B 情境提議，你可以先預覽，再決定要不要套用。";
 
 function normalizeLegacyScenarioName(value) {
   const text = String(value || "").trim();
@@ -2860,10 +2862,14 @@ export default function PersonalFinanceCashflowSimulator() {
   const [aiOpen, setAiOpen] = useState(false);
   const [aiHistory, setAiHistory] = useState([]);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiDraftMessage, setAiDraftMessage] = useState("");
   const [aiProposal, setAiProposal] = useState(null);
   const [aiError, setAiError] = useState("");
   const [aiQuota, setAiQuota] = useState(null);
   const [compareB, setCompareB] = useState(null);
+  const aiRequestControllerRef = useRef(null);
+  const aiRequestIdRef = useRef(0);
+  const aiLoadingStartedAtRef = useRef(0);
   const monthRefs = useRef({});
   const fileInputRef = useRef(null);
   const cloudHydratedRef = useRef(false);
@@ -2957,10 +2963,37 @@ export default function PersonalFinanceCashflowSimulator() {
   );
 
   // ── AI scenario handlers ─────────────────────────────────────────────────
+  const cancelAiRequest = useCallback(() => {
+    aiRequestControllerRef.current?.abort();
+    aiRequestControllerRef.current = null;
+    setAiLoading(false);
+    setAiDraftMessage("");
+  }, []);
+
+  useEffect(() => {
+    if (!aiLoading) return undefined;
+
+    aiLoadingStartedAtRef.current = Date.now();
+
+    const updateDraftMessage = () => {
+      setAiDraftMessage(getAiStreamingStatusText(Date.now() - aiLoadingStartedAtRef.current));
+    };
+
+    updateDraftMessage();
+    const intervalId = window.setInterval(updateDraftMessage, 250);
+
+    return () => window.clearInterval(intervalId);
+  }, [aiLoading]);
+
   const handleAiSend = useCallback(
     async (text) => {
+      if (aiLoading) return;
       setAiError("");
       setAiHistory((h) => [...h, { role: "user", content: text }]);
+      const controller = new AbortController();
+      const requestId = aiRequestIdRef.current + 1;
+      aiRequestIdRef.current = requestId;
+      aiRequestControllerRef.current = controller;
       setAiLoading(true);
       try {
         const supa = createFlowraSupabaseClient();
@@ -2968,20 +3001,30 @@ export default function PersonalFinanceCashflowSimulator() {
           scenario,
           userMessage: text,
           history: aiHistory,
+          signal: controller.signal,
         });
+        if (aiRequestIdRef.current !== requestId) return;
         setAiQuota({ used: res.used, quota: res.quota });
         if (res.kind === "clarify") {
+          setAiDraftMessage("");
           setAiHistory((h) => [...h, { role: "assistant", questions: res.questions }]);
         } else if (res.kind === "diff") {
+          setAiDraftMessage("");
+          setAiHistory((h) => [...h, { role: "assistant", content: AI_DIFF_READY_MESSAGE }]);
           setAiProposal(res.diff);
         }
       } catch (e) {
+        if (e?.name === "AbortError") return;
+        setAiDraftMessage("");
         setAiError(e.message || "AI 輔助分析失敗");
       } finally {
-        setAiLoading(false);
+        if (aiRequestIdRef.current === requestId) {
+          aiRequestControllerRef.current = null;
+          setAiLoading(false);
+        }
       }
     },
-    [scenario, aiHistory],
+    [scenario, aiHistory, aiLoading],
   );
 
   const handleAiApply = useCallback(() => {
@@ -3000,10 +3043,18 @@ export default function PersonalFinanceCashflowSimulator() {
 
   const handleAiDiscard = useCallback(() => setAiProposal(null), []);
   const handleAiNewChat = useCallback(() => {
+    cancelAiRequest();
     setAiHistory([]);
     setAiProposal(null);
     setAiError("");
-  }, []);
+  }, [cancelAiRequest]);
+  const handleAiStop = useCallback(() => {
+    cancelAiRequest();
+  }, [cancelAiRequest]);
+  const handleAiClose = useCallback(() => {
+    cancelAiRequest();
+    setAiOpen(false);
+  }, [cancelAiRequest]);
   const handleLeaveCompare = useCallback(() => setCompareB(null), []);
   const handleAdoptB = useCallback(() => {
     if (!compareB) return;
@@ -3016,6 +3067,8 @@ export default function PersonalFinanceCashflowSimulator() {
     (payload) => transitionApply(payload, { markDirty: false }),
     [transitionApply],
   );
+
+  useEffect(() => () => cancelAiRequest(), [cancelAiRequest]);
 
   const cloud = useCloudSync({
     resolveSyncPayload: resolveSyncPayloadForHook,
@@ -3046,6 +3099,7 @@ export default function PersonalFinanceCashflowSimulator() {
     cloudFeaturesEnabled,
     cloudSetupMessage,
     supabaseReady,
+    isDevMode,
     setSyncStatus: setCloudSyncStatus,
     setIsHydrated: setIsCloudHydrated,
     refreshBackup: refreshCloudBackup,
@@ -3054,7 +3108,6 @@ export default function PersonalFinanceCashflowSimulator() {
     signOut: signOutFromSupabase,
   } = cloud;
 
-  const aiAvailable = supabaseReady && cloudAuthState === "authenticated";
   const aiDisabledReason = !supabaseReady
     ? "雲端尚未啟用，無法使用 AI 輔助分析"
     : cloudAuthState !== "authenticated"
@@ -3227,12 +3280,8 @@ export default function PersonalFinanceCashflowSimulator() {
     ) {
       return undefined;
     }
-    const supabase = createFlowraSupabaseClient();
-    if (!supabase) return undefined;
-
     let cancelled = false;
-    supabase.auth.getSession().then(async ({ data, error }) => {
-      if (cancelled || error || !data?.session || cloudHydratedRef.current) return;
+    const hydrateFromCloud = async () => {
       const { data: cloudBackup } = await refreshCloudBackup({ silent: true, applyPayload: false });
       if (cancelled) return;
       cloudHydratedRef.current = true;
@@ -3272,6 +3321,21 @@ export default function PersonalFinanceCashflowSimulator() {
       if (notice) setHydrationNotice(notice);
 
       setIsCloudHydrated(true);
+    };
+
+    if (isDevMode) {
+      hydrateFromCloud();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const supabase = createFlowraSupabaseClient();
+    if (!supabase) return undefined;
+
+    supabase.auth.getSession().then(async ({ data, error }) => {
+      if (cancelled || error || !data?.session || cloudHydratedRef.current) return;
+      await hydrateFromCloud();
     });
 
     return () => {
@@ -3280,6 +3344,7 @@ export default function PersonalFinanceCashflowSimulator() {
   }, [
     cloudAuthState,
     cloudSetupState,
+    isDevMode,
     supabaseReady,
     refreshCloudBackup,
     transitionApply,
@@ -4714,8 +4779,24 @@ export default function PersonalFinanceCashflowSimulator() {
                             ? "確認中…"
                             : "尚未登入"}
                       </span>
+                      {isDevMode ? (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            lineHeight: 1,
+                            padding: "4px 6px",
+                            borderRadius: "999px",
+                            background: "#e0f2fe",
+                            color: "#0369a1",
+                            border: "1px solid #bae6fd",
+                            flexShrink: 0,
+                          }}
+                        >
+                          開發者模式
+                        </span>
+                      ) : null}
                     </div>
-                    {cloudAuthState === "authenticated" ? (
+                    {cloudAuthState === "authenticated" && !isDevMode ? (
                       <InteractiveButton
                         variant="smallButton"
                         onClick={signOutFromSupabase}
@@ -4725,7 +4806,13 @@ export default function PersonalFinanceCashflowSimulator() {
                       </InteractiveButton>
                     ) : null}
                   </div>
-                  {cloudAuthState === "authenticated" ? null : (
+                  {cloudAuthState === "authenticated" ? (
+                    isDevMode ? (
+                      <div style={{ ...styles.metaText, fontSize: "12px", margin: "10px 0 0" }}>
+                        開發者模式已啟用，雲端備份與 AI 輔助分析會使用本機 mock 資料。
+                      </div>
+                    ) : null
+                  ) : (
                     <>
                       <div style={{ ...styles.metaText, fontSize: "12px", margin: "0 0 8px" }}>
                         使用 Google 帳號登入後即可同步雲端備份。
@@ -5229,9 +5316,10 @@ export default function PersonalFinanceCashflowSimulator() {
       ) : null}
       <AIScenarioChat
         open={aiOpen}
-        onClose={() => setAiOpen(false)}
+        onClose={handleAiClose}
         history={aiHistory}
         loading={aiLoading}
+        draftMessage={aiDraftMessage}
         proposal={aiProposal}
         error={aiError}
         quota={aiQuota}
@@ -5239,6 +5327,7 @@ export default function PersonalFinanceCashflowSimulator() {
         onApply={handleAiApply}
         onDiscardProposal={handleAiDiscard}
         onNewChat={handleAiNewChat}
+        onStop={handleAiStop}
         disabled={!cloudFeaturesEnabled}
         disabledReason={aiDisabledReason}
       />
