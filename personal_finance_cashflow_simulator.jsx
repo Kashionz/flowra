@@ -5285,31 +5285,94 @@ export default function PersonalFinanceCashflowSimulator() {
                 </div>
               ) : null}
               {bulkInstallmentErrors.length ? (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    display: "grid",
-                    gap: "8px",
-                    maxHeight: "220px",
-                    overflow: "auto",
-                  }}
-                >
-                  {bulkInstallmentErrors.map((error) => (
-                    <div
-                      key={`${error.lineNumber}-${error.line}`}
+                <div style={{ marginTop: "12px" }} data-testid="bulk-installment-errors">
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      marginBottom: "8px",
+                      color: "#be123c",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
                       style={{
-                        borderRadius: "12px",
-                        background: "#fff1f2",
-                        border: "1px solid #fecdd3",
-                        padding: "10px",
-                        color: "#be123c",
-                        fontSize: "12px",
+                        width: "16px",
+                        height: "16px",
+                        borderRadius: "999px",
+                        background: "#fecdd3",
+                        color: "#9f1239",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: "11px",
                       }}
                     >
-                      第 {error.lineNumber} 行：{error.message}
-                      <div style={{ marginTop: "4px", color: "#881337" }}>{error.line}</div>
-                    </div>
-                  ))}
+                      !
+                    </span>
+                    解析失敗 {bulkInstallmentErrors.length} 筆（解決後才能匯入）
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: "8px",
+                      maxHeight: "220px",
+                      overflow: "auto",
+                    }}
+                  >
+                    {bulkInstallmentErrors.map((error) => (
+                      <div
+                        key={`${error.lineNumber}-${error.line}`}
+                        style={{
+                          borderRadius: "12px",
+                          background: "#fff1f2",
+                          border: "1px solid #fecdd3",
+                          padding: "10px 12px",
+                          color: "#be123c",
+                          fontSize: "12px",
+                          display: "grid",
+                          gap: "6px",
+                        }}
+                        role="alert"
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              minWidth: "44px",
+                              padding: "2px 8px",
+                              borderRadius: "999px",
+                              background: "#be123c",
+                              color: "#fff",
+                              fontWeight: 700,
+                              fontSize: "11px",
+                            }}
+                          >
+                            第 {error.lineNumber} 行
+                          </span>
+                          <span style={{ color: "#9f1239" }}>{error.message}</span>
+                        </div>
+                        <code
+                          style={{
+                            display: "block",
+                            background: "#ffe4e6",
+                            color: "#881337",
+                            padding: "6px 8px",
+                            borderRadius: "8px",
+                            fontFamily: "ui-monospace, SFMono-Regular, monospace",
+                            fontSize: "11px",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {error.line}
+                        </code>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </FloatingSurface>
