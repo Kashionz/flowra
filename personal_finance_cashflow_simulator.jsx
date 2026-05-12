@@ -501,6 +501,49 @@ function resolveSyncPayload(candidate, scenario) {
   return isScenarioPayload(candidate) ? candidate : toPersistedScenario(scenario);
 }
 
+function ListEmptyState({ icon, title, description, actions }) {
+  return (
+    <div
+      style={{
+        marginTop: 0,
+        padding: "20px 16px",
+        borderRadius: "16px",
+        border: "1px dashed #cbd5e1",
+        background: "#f8fafc",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: "8px",
+        textAlign: "center",
+      }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          width: "36px",
+          height: "36px",
+          borderRadius: "999px",
+          background: "#e2e8f0",
+          color: "#475569",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        {icon}
+      </div>
+      <div style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{title}</div>
+      {description ? (
+        <div style={{ fontSize: "12px", color: "#64748b", maxWidth: "320px" }}>{description}</div>
+      ) : null}
+      {actions && actions.length ? (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+          {actions}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function EmptyChartState() {
   return (
     <div
@@ -4195,17 +4238,34 @@ export default function PersonalFinanceCashflowSimulator() {
               </div>
               <Collapsible open={isOneTimeOpen}>
                 {scenario.oneTimeItems.length === 0 ? (
-                  <div
-                    style={{
-                      ...styles.mutedBox,
-                      marginTop: 0,
-                      textAlign: "center",
-                      color: "#64748b",
-                      fontSize: "13px",
-                    }}
-                  >
-                    尚未新增任何單筆收支，按右上「+ 新增」開始。
-                  </div>
+                  <ListEmptyState
+                    icon={
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                    }
+                    title="還沒有單筆收支"
+                    description="把獎金、退稅、年費、紅包等一次性現金流加進來，現金流圖會立刻反映。"
+                    actions={[
+                      <InteractiveButton
+                        key="add"
+                        variant="smallButton"
+                        onClick={addOneTimeItem}
+                        disabled={readonlyShared}
+                      >
+                        立即新增第一筆
+                      </InteractiveButton>,
+                    ]}
+                  />
                 ) : (
                   <DndContext
                     sensors={sensors}
@@ -4442,17 +4502,43 @@ export default function PersonalFinanceCashflowSimulator() {
               </div>
               <Collapsible open={isInstallmentsOpen}>
                 {editableInstallments.length === 0 ? (
-                  <div
-                    style={{
-                      ...styles.mutedBox,
-                      marginTop: 0,
-                      textAlign: "center",
-                      color: "#64748b",
-                      fontSize: "13px",
-                    }}
-                  >
-                    尚未新增分期付款，可按「+ 新增」或「批次匯入」開始。
-                  </div>
+                  <ListEmptyState
+                    icon={
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect x="3" y="6" width="18" height="13" rx="2" />
+                        <path d="M3 10h18M7 15h4" />
+                      </svg>
+                    }
+                    title="還沒有分期付款"
+                    description="新增信用卡分期、貸款或訂閱付款，未來月份的支出會自動納入預測。"
+                    actions={[
+                      <InteractiveButton
+                        key="add"
+                        variant="smallButton"
+                        onClick={addInstallment}
+                        disabled={readonlyShared}
+                      >
+                        + 新增分期
+                      </InteractiveButton>,
+                      <InteractiveButton
+                        key="bulk"
+                        variant="smallButton"
+                        onClick={() => setIsBulkImportOpen(true)}
+                        disabled={readonlyShared}
+                      >
+                        批次匯入
+                      </InteractiveButton>,
+                    ]}
+                  />
                 ) : (
                   <DndContext
                     sensors={sensors}
