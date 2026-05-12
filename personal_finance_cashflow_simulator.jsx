@@ -3955,6 +3955,39 @@ export default function PersonalFinanceCashflowSimulator() {
           </div>
         ) : null}
 
+        {isOffline ? (
+          <div
+            className="flowra-no-print flowra-no-report-export"
+            style={{
+              marginBottom: "12px",
+              padding: "10px 14px",
+              borderRadius: "12px",
+              border: "1px solid #fcd34d",
+              background: "#fffbeb",
+              color: "#92400e",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              fontSize: "13px",
+            }}
+            role="alert"
+            data-testid="offline-banner"
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: "8px",
+                height: "8px",
+                borderRadius: "999px",
+                background: "#d97706",
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ fontWeight: 700 }}>目前離線</span>
+            <span style={{ color: "#a16207" }}>變更會暫存在這台裝置，恢復連線後會自動同步。</span>
+          </div>
+        ) : null}
+
         {hydrationNotice && hydrationNotice.source !== "cloud" ? (
           <div
             className="flowra-no-print flowra-no-report-export"
