@@ -21,6 +21,7 @@ import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { useCloudSync } from "./hooks/useCloudSync.js";
 import { useSnackbar } from "./hooks/useSnackbar.js";
 import UndoSnackbar from "./components/UndoSnackbar.jsx";
+import KeyboardShortcutsDialog from "./components/KeyboardShortcutsDialog.jsx";
 import { clampDropdownRight, clampTooltipLeft } from "./lib/clampViewport.js";
 import { DATA_MANAGEMENT_ACTIONS, getImportReplaceNotice } from "./lib/dataManagementOptions.js";
 import { makeItemId, syncItemIdSequenceFromScenario } from "./lib/itemIds.js";
@@ -2913,6 +2914,7 @@ export default function PersonalFinanceCashflowSimulator() {
   const [aiQuota, setAiQuota] = useState(null);
   const [compareB, setCompareB] = useState(null);
   const snackbar = useSnackbar();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const aiRequestControllerRef = useRef(null);
   const aiRequestIdRef = useRef(0);
   const aiLoadingStartedAtRef = useRef(0);
@@ -3275,9 +3277,22 @@ export default function PersonalFinanceCashflowSimulator() {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
+    const isEditableTarget = (target) => {
+      if (!target) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         setIsExportMenuOpen(false);
+        setShortcutsOpen(false);
+        return;
+      }
+      if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        setShortcutsOpen((value) => !value);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -5568,6 +5583,7 @@ export default function PersonalFinanceCashflowSimulator() {
         onTrigger={snackbar.trigger}
         onDismiss={snackbar.dismiss}
       />
+      <KeyboardShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }
