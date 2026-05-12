@@ -19,6 +19,8 @@ import {
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { useCloudSync } from "./hooks/useCloudSync.js";
+import { useSnackbar } from "./hooks/useSnackbar.js";
+import UndoSnackbar from "./components/UndoSnackbar.jsx";
 import { clampDropdownRight, clampTooltipLeft } from "./lib/clampViewport.js";
 import { DATA_MANAGEMENT_ACTIONS, getImportReplaceNotice } from "./lib/dataManagementOptions.js";
 import { makeItemId, syncItemIdSequenceFromScenario } from "./lib/itemIds.js";
@@ -2867,6 +2869,7 @@ export default function PersonalFinanceCashflowSimulator() {
   const [aiError, setAiError] = useState("");
   const [aiQuota, setAiQuota] = useState(null);
   const [compareB, setCompareB] = useState(null);
+  const snackbar = useSnackbar();
   const aiRequestControllerRef = useRef(null);
   const aiRequestIdRef = useRef(0);
   const aiLoadingStartedAtRef = useRef(0);
@@ -3432,7 +3435,29 @@ export default function PersonalFinanceCashflowSimulator() {
     setOpenInstallmentItemIds((current) => ({ ...current, [id]: true }));
   };
 
+  const restoreOneTimeItem = (snapshot, index) => {
+    setScenario((current) => {
+      if (current.oneTimeItems.some((item) => item.id === snapshot.id)) return current;
+      const next = [...current.oneTimeItems];
+      const insertAt = Math.max(0, Math.min(next.length, index));
+      next.splice(insertAt, 0, snapshot);
+      return cloneScenario(current, { oneTimeItems: next });
+    });
+  };
+
+  const restoreInstallment = (snapshot, index) => {
+    setScenario((current) => {
+      if (current.installments.some((item) => item.id === snapshot.id)) return current;
+      const next = [...current.installments];
+      const insertAt = Math.max(0, Math.min(next.length, index));
+      next.splice(insertAt, 0, snapshot);
+      return cloneScenario(current, { installments: next });
+    });
+  };
+
   const removeOneTimeItem = (id) => {
+    const index = scenario.oneTimeItems.findIndex((item) => item.id === id);
+    const snapshot = index >= 0 ? scenario.oneTimeItems[index] : null;
     setScenario((current) =>
       cloneScenario(current, {
         oneTimeItems: current.oneTimeItems.filter((item) => item.id !== id),
@@ -3443,9 +3468,18 @@ export default function PersonalFinanceCashflowSimulator() {
       delete next[id];
       return next;
     });
+    if (snapshot) {
+      snackbar.push({
+        message: `已刪除「${snapshot.name || "未命名項目"}」`,
+        actionLabel: "復原",
+        onAction: () => restoreOneTimeItem(snapshot, index),
+      });
+    }
   };
 
   const removeInstallment = (id) => {
+    const index = scenario.installments.findIndex((item) => item.id === id);
+    const snapshot = index >= 0 ? scenario.installments[index] : null;
     setScenario((current) =>
       cloneScenario(current, {
         installments: current.installments.filter((item) => item.id !== id),
@@ -3456,6 +3490,13 @@ export default function PersonalFinanceCashflowSimulator() {
       delete next[id];
       return next;
     });
+    if (snapshot) {
+      snackbar.push({
+        message: `已刪除「${snapshot.name || "未命名分期"}」`,
+        actionLabel: "復原",
+        onAction: () => restoreInstallment(snapshot, index),
+      });
+    }
   };
 
   const duplicateOneTimeItem = (id) => {
@@ -5340,6 +5381,11 @@ export default function PersonalFinanceCashflowSimulator() {
           onLeave={handleLeaveCompare}
         />
       )}
+      <UndoSnackbar
+        items={snackbar.items}
+        onTrigger={snackbar.trigger}
+        onDismiss={snackbar.dismiss}
+      />
     </div>
   );
 }
