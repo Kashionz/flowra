@@ -37,6 +37,14 @@ jobs:
 
       - name: Build
         run: pnpm build:web
+        env:
+          # AI e2e tests need cloud features bundled into the preview build,
+          # otherwise the AI trigger renders disabled and ai-*.spec.js times
+          # out clicking it. Project ref must match the storage key prefix
+          # in e2e/helpers/mockAiAccess.js so the seeded session is picked
+          # up; all *.supabase.co requests are intercepted by page.route().
+          VITE_SUPABASE_URL: https://hxhcjiiiuknelfsmumcy.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-fake-anon-key-not-a-real-secret
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
