@@ -19,6 +19,9 @@ import {
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
 import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { useCloudSync } from "./hooks/useCloudSync.js";
+import { useSnackbar } from "./hooks/useSnackbar.js";
+import UndoSnackbar from "./components/UndoSnackbar.jsx";
+import KeyboardShortcutsDialog from "./components/KeyboardShortcutsDialog.jsx";
 import { clampDropdownRight, clampTooltipLeft } from "./lib/clampViewport.js";
 import { DATA_MANAGEMENT_ACTIONS, getImportReplaceNotice } from "./lib/dataManagementOptions.js";
 import { makeItemId, syncItemIdSequenceFromScenario } from "./lib/itemIds.js";
@@ -497,6 +500,49 @@ function isScenarioPayload(value) {
 
 function resolveSyncPayload(candidate, scenario) {
   return isScenarioPayload(candidate) ? candidate : toPersistedScenario(scenario);
+}
+
+function ListEmptyState({ icon, title, description, actions }) {
+  return (
+    <div
+      style={{
+        marginTop: 0,
+        padding: "20px 16px",
+        borderRadius: "16px",
+        border: "1px dashed #cbd5e1",
+        background: "#f8fafc",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: "8px",
+        textAlign: "center",
+      }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          width: "36px",
+          height: "36px",
+          borderRadius: "999px",
+          background: "#e2e8f0",
+          color: "#475569",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        {icon}
+      </div>
+      <div style={{ fontSize: "14px", fontWeight: 700, color: "#0f172a" }}>{title}</div>
+      {description ? (
+        <div style={{ fontSize: "12px", color: "#64748b", maxWidth: "320px" }}>{description}</div>
+      ) : null}
+      {actions && actions.length ? (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+          {actions}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function EmptyChartState() {
@@ -2867,6 +2913,8 @@ export default function PersonalFinanceCashflowSimulator() {
   const [aiError, setAiError] = useState("");
   const [aiQuota, setAiQuota] = useState(null);
   const [compareB, setCompareB] = useState(null);
+  const snackbar = useSnackbar();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const aiRequestControllerRef = useRef(null);
   const aiRequestIdRef = useRef(0);
   const aiLoadingStartedAtRef = useRef(0);
@@ -3229,9 +3277,22 @@ export default function PersonalFinanceCashflowSimulator() {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
+    const isEditableTarget = (target) => {
+      if (!target) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         setIsExportMenuOpen(false);
+        setShortcutsOpen(false);
+        return;
+      }
+      if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        setShortcutsOpen((value) => !value);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -3432,7 +3493,29 @@ export default function PersonalFinanceCashflowSimulator() {
     setOpenInstallmentItemIds((current) => ({ ...current, [id]: true }));
   };
 
+  const restoreOneTimeItem = (snapshot, index) => {
+    setScenario((current) => {
+      if (current.oneTimeItems.some((item) => item.id === snapshot.id)) return current;
+      const next = [...current.oneTimeItems];
+      const insertAt = Math.max(0, Math.min(next.length, index));
+      next.splice(insertAt, 0, snapshot);
+      return cloneScenario(current, { oneTimeItems: next });
+    });
+  };
+
+  const restoreInstallment = (snapshot, index) => {
+    setScenario((current) => {
+      if (current.installments.some((item) => item.id === snapshot.id)) return current;
+      const next = [...current.installments];
+      const insertAt = Math.max(0, Math.min(next.length, index));
+      next.splice(insertAt, 0, snapshot);
+      return cloneScenario(current, { installments: next });
+    });
+  };
+
   const removeOneTimeItem = (id) => {
+    const index = scenario.oneTimeItems.findIndex((item) => item.id === id);
+    const snapshot = index >= 0 ? scenario.oneTimeItems[index] : null;
     setScenario((current) =>
       cloneScenario(current, {
         oneTimeItems: current.oneTimeItems.filter((item) => item.id !== id),
@@ -3443,9 +3526,18 @@ export default function PersonalFinanceCashflowSimulator() {
       delete next[id];
       return next;
     });
+    if (snapshot) {
+      snackbar.push({
+        message: `已刪除「${snapshot.name || "未命名項目"}」`,
+        actionLabel: "復原",
+        onAction: () => restoreOneTimeItem(snapshot, index),
+      });
+    }
   };
 
   const removeInstallment = (id) => {
+    const index = scenario.installments.findIndex((item) => item.id === id);
+    const snapshot = index >= 0 ? scenario.installments[index] : null;
     setScenario((current) =>
       cloneScenario(current, {
         installments: current.installments.filter((item) => item.id !== id),
@@ -3456,6 +3548,13 @@ export default function PersonalFinanceCashflowSimulator() {
       delete next[id];
       return next;
     });
+    if (snapshot) {
+      snackbar.push({
+        message: `已刪除「${snapshot.name || "未命名分期"}」`,
+        actionLabel: "復原",
+        onAction: () => restoreInstallment(snapshot, index),
+      });
+    }
   };
 
   const duplicateOneTimeItem = (id) => {
@@ -3914,6 +4013,39 @@ export default function PersonalFinanceCashflowSimulator() {
           </div>
         ) : null}
 
+        {isOffline ? (
+          <div
+            className="flowra-no-print flowra-no-report-export"
+            style={{
+              marginBottom: "12px",
+              padding: "10px 14px",
+              borderRadius: "12px",
+              border: "1px solid #fcd34d",
+              background: "#fffbeb",
+              color: "#92400e",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              fontSize: "13px",
+            }}
+            role="alert"
+            data-testid="offline-banner"
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: "8px",
+                height: "8px",
+                borderRadius: "999px",
+                background: "#d97706",
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ fontWeight: 700 }}>目前離線</span>
+            <span style={{ color: "#a16207" }}>變更會暫存在這台裝置，恢復連線後會自動同步。</span>
+          </div>
+        ) : null}
+
         {hydrationNotice && hydrationNotice.source !== "cloud" ? (
           <div
             className="flowra-no-print flowra-no-report-export"
@@ -4121,17 +4253,34 @@ export default function PersonalFinanceCashflowSimulator() {
               </div>
               <Collapsible open={isOneTimeOpen}>
                 {scenario.oneTimeItems.length === 0 ? (
-                  <div
-                    style={{
-                      ...styles.mutedBox,
-                      marginTop: 0,
-                      textAlign: "center",
-                      color: "#64748b",
-                      fontSize: "13px",
-                    }}
-                  >
-                    尚未新增任何單筆收支，按右上「+ 新增」開始。
-                  </div>
+                  <ListEmptyState
+                    icon={
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                    }
+                    title="還沒有單筆收支"
+                    description="把獎金、退稅、年費、紅包等一次性現金流加進來，現金流圖會立刻反映。"
+                    actions={[
+                      <InteractiveButton
+                        key="add"
+                        variant="smallButton"
+                        onClick={addOneTimeItem}
+                        disabled={readonlyShared}
+                      >
+                        立即新增第一筆
+                      </InteractiveButton>,
+                    ]}
+                  />
                 ) : (
                   <DndContext
                     sensors={sensors}
@@ -4368,17 +4517,43 @@ export default function PersonalFinanceCashflowSimulator() {
               </div>
               <Collapsible open={isInstallmentsOpen}>
                 {editableInstallments.length === 0 ? (
-                  <div
-                    style={{
-                      ...styles.mutedBox,
-                      marginTop: 0,
-                      textAlign: "center",
-                      color: "#64748b",
-                      fontSize: "13px",
-                    }}
-                  >
-                    尚未新增分期付款，可按「+ 新增」或「批次匯入」開始。
-                  </div>
+                  <ListEmptyState
+                    icon={
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect x="3" y="6" width="18" height="13" rx="2" />
+                        <path d="M3 10h18M7 15h4" />
+                      </svg>
+                    }
+                    title="還沒有分期付款"
+                    description="新增信用卡分期、貸款或訂閱付款，未來月份的支出會自動納入預測。"
+                    actions={[
+                      <InteractiveButton
+                        key="add"
+                        variant="smallButton"
+                        onClick={addInstallment}
+                        disabled={readonlyShared}
+                      >
+                        + 新增分期
+                      </InteractiveButton>,
+                      <InteractiveButton
+                        key="bulk"
+                        variant="smallButton"
+                        onClick={() => setIsBulkImportOpen(true)}
+                        disabled={readonlyShared}
+                      >
+                        批次匯入
+                      </InteractiveButton>,
+                    ]}
+                  />
                 ) : (
                   <DndContext
                     sensors={sensors}
@@ -5125,31 +5300,94 @@ export default function PersonalFinanceCashflowSimulator() {
                 </div>
               ) : null}
               {bulkInstallmentErrors.length ? (
-                <div
-                  style={{
-                    marginTop: "12px",
-                    display: "grid",
-                    gap: "8px",
-                    maxHeight: "220px",
-                    overflow: "auto",
-                  }}
-                >
-                  {bulkInstallmentErrors.map((error) => (
-                    <div
-                      key={`${error.lineNumber}-${error.line}`}
+                <div style={{ marginTop: "12px" }} data-testid="bulk-installment-errors">
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      marginBottom: "8px",
+                      color: "#be123c",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
                       style={{
-                        borderRadius: "12px",
-                        background: "#fff1f2",
-                        border: "1px solid #fecdd3",
-                        padding: "10px",
-                        color: "#be123c",
-                        fontSize: "12px",
+                        width: "16px",
+                        height: "16px",
+                        borderRadius: "999px",
+                        background: "#fecdd3",
+                        color: "#9f1239",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: "11px",
                       }}
                     >
-                      第 {error.lineNumber} 行：{error.message}
-                      <div style={{ marginTop: "4px", color: "#881337" }}>{error.line}</div>
-                    </div>
-                  ))}
+                      !
+                    </span>
+                    解析失敗 {bulkInstallmentErrors.length} 筆（解決後才能匯入）
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: "8px",
+                      maxHeight: "220px",
+                      overflow: "auto",
+                    }}
+                  >
+                    {bulkInstallmentErrors.map((error) => (
+                      <div
+                        key={`${error.lineNumber}-${error.line}`}
+                        style={{
+                          borderRadius: "12px",
+                          background: "#fff1f2",
+                          border: "1px solid #fecdd3",
+                          padding: "10px 12px",
+                          color: "#be123c",
+                          fontSize: "12px",
+                          display: "grid",
+                          gap: "6px",
+                        }}
+                        role="alert"
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              minWidth: "44px",
+                              padding: "2px 8px",
+                              borderRadius: "999px",
+                              background: "#be123c",
+                              color: "#fff",
+                              fontWeight: 700,
+                              fontSize: "11px",
+                            }}
+                          >
+                            第 {error.lineNumber} 行
+                          </span>
+                          <span style={{ color: "#9f1239" }}>{error.message}</span>
+                        </div>
+                        <code
+                          style={{
+                            display: "block",
+                            background: "#ffe4e6",
+                            color: "#881337",
+                            padding: "6px 8px",
+                            borderRadius: "8px",
+                            fontFamily: "ui-monospace, SFMono-Regular, monospace",
+                            fontSize: "11px",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {error.line}
+                        </code>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </FloatingSurface>
@@ -5340,6 +5578,12 @@ export default function PersonalFinanceCashflowSimulator() {
           onLeave={handleLeaveCompare}
         />
       )}
+      <UndoSnackbar
+        items={snackbar.items}
+        onTrigger={snackbar.trigger}
+        onDismiss={snackbar.dismiss}
+      />
+      <KeyboardShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }
