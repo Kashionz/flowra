@@ -17,6 +17,7 @@ import {
   ChartTooltipCard,
 } from "./components/ui/chart.jsx";
 import { TEMPLATE_DEFINITIONS } from "./lib/templates/index.js";
+import { filterItemsByName } from "./lib/listSearch.js";
 import { useUndoableState } from "./hooks/useScenarioHistory.js";
 import { useCloudSync } from "./hooks/useCloudSync.js";
 import { useSnackbar } from "./hooks/useSnackbar.js";
@@ -543,6 +544,177 @@ function ListEmptyState({ icon, title, description, actions }) {
       ) : null}
     </div>
   );
+}
+
+function ListToolbar({
+  query,
+  onQueryChange,
+  totalCount,
+  filteredCount,
+  onExpandAll,
+  onCollapseAll,
+  disabled,
+  searchPlaceholder,
+}) {
+  const trimmed = query.trim();
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: "8px",
+        marginTop: 0,
+        marginBottom: "10px",
+      }}
+    >
+      <label
+        style={{
+          position: "relative",
+          flex: "1 1 200px",
+          display: "flex",
+          alignItems: "center",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: "10px",
+            display: "inline-flex",
+            color: "#94a3b8",
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="6" cy="6" r="4" />
+            <path d="M12 12 L9 9" />
+          </svg>
+        </span>
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          disabled={disabled}
+          placeholder={searchPlaceholder}
+          aria-label={searchPlaceholder}
+          style={{
+            width: "100%",
+            border: "1px solid #cbd5e1",
+            borderRadius: "10px",
+            padding: "6px 28px 6px 30px",
+            background: "#ffffff",
+            color: "#0f172a",
+            fontSize: "13px",
+            outline: "none",
+          }}
+        />
+        {trimmed.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => onQueryChange("")}
+            aria-label="清除搜尋"
+            title="清除搜尋"
+            style={{
+              position: "absolute",
+              right: "6px",
+              border: "none",
+              background: "transparent",
+              color: "#64748b",
+              cursor: "pointer",
+              fontSize: "14px",
+              lineHeight: 1,
+              padding: "2px 6px",
+            }}
+          >
+            ×
+          </button>
+        ) : null}
+      </label>
+      <span
+        role="status"
+        aria-live="polite"
+        style={{
+          fontSize: "11px",
+          color: "#64748b",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {trimmed ? `找到 ${filteredCount} 筆 / 共 ${totalCount} 筆` : `共 ${totalCount} 筆`}
+      </span>
+      <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+        <InteractiveButton
+          variant="smallButton"
+          onClick={onExpandAll}
+          disabled={disabled || totalCount === 0}
+          title="全部展開"
+          aria-label="全部展開"
+        >
+          展開
+        </InteractiveButton>
+        <InteractiveButton
+          variant="smallButton"
+          onClick={onCollapseAll}
+          disabled={disabled || totalCount === 0}
+          title="全部收合"
+          aria-label="全部收合"
+        >
+          收合
+        </InteractiveButton>
+      </div>
+    </div>
+  );
+}
+
+function SearchEmptyState({ query, onClear }) {
+  return (
+    <ListEmptyState
+      icon={
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+      }
+      title={`沒有符合「${query}」的項目`}
+      description="試試別的關鍵字，或清除搜尋條件回到完整列表。"
+      actions={[
+        <InteractiveButton key="clear" variant="smallButton" onClick={onClear}>
+          清除搜尋
+        </InteractiveButton>,
+      ]}
+    />
+  );
+}
+
+const LIST_SCROLL_THRESHOLD = 8;
+
+function listScrollContainerStyle(active) {
+  if (!active) return undefined;
+  return {
+    maxHeight: "60vh",
+    overflowY: "auto",
+    border: "1px solid #e2e8f0",
+    borderRadius: "12px",
+    padding: "8px",
+    background: "#ffffff",
+  };
 }
 
 function EmptyChartState() {
@@ -1242,9 +1414,10 @@ function SettingsGroup({ title, accent, last, children }) {
   );
 }
 
-function SortableItemShell({ id, children }) {
+function SortableItemShell({ id, disabled = false, children }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id,
+    disabled,
   });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1256,27 +1429,29 @@ function SortableItemShell({ id, children }) {
   return (
     <div ref={setNodeRef} style={style} className="flowra-sortable-item">
       <div style={{ display: "flex", gap: "4px", alignItems: "stretch" }}>
-        <button
-          type="button"
-          {...attributes}
-          {...listeners}
-          style={{
-            ...styles.dragHandle,
-            cursor: isDragging ? "grabbing" : "grab",
-          }}
-          className={joinClassNames("flowra-drag-handle", isDragging ? "is-dragging" : "")}
-          aria-label="拖拉排序"
-          title="拖拉排序"
-        >
-          <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
-            <circle cx="2" cy="3" r="1.3" />
-            <circle cx="8" cy="3" r="1.3" />
-            <circle cx="2" cy="8" r="1.3" />
-            <circle cx="8" cy="8" r="1.3" />
-            <circle cx="2" cy="13" r="1.3" />
-            <circle cx="8" cy="13" r="1.3" />
-          </svg>
-        </button>
+        {disabled ? null : (
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            style={{
+              ...styles.dragHandle,
+              cursor: isDragging ? "grabbing" : "grab",
+            }}
+            className={joinClassNames("flowra-drag-handle", isDragging ? "is-dragging" : "")}
+            aria-label="拖拉排序"
+            title="拖拉排序"
+          >
+            <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
+              <circle cx="2" cy="3" r="1.3" />
+              <circle cx="8" cy="3" r="1.3" />
+              <circle cx="2" cy="8" r="1.3" />
+              <circle cx="8" cy="8" r="1.3" />
+              <circle cx="2" cy="13" r="1.3" />
+              <circle cx="8" cy="13" r="1.3" />
+            </svg>
+          </button>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
       </div>
     </div>
@@ -2915,6 +3090,8 @@ export default function PersonalFinanceCashflowSimulator() {
   const [compareB, setCompareB] = useState(null);
   const snackbar = useSnackbar();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [oneTimeSearch, setOneTimeSearch] = useState("");
+  const [installmentSearch, setInstallmentSearch] = useState("");
   const aiRequestControllerRef = useRef(null);
   const aiRequestIdRef = useRef(0);
   const aiLoadingStartedAtRef = useRef(0);
@@ -2966,6 +3143,16 @@ export default function PersonalFinanceCashflowSimulator() {
     () => decorateInstallments(scenario.installments),
     [scenario.installments],
   );
+  const filteredOneTimeItems = useMemo(
+    () => filterItemsByName(scenario.oneTimeItems, isExporting ? "" : oneTimeSearch),
+    [scenario.oneTimeItems, oneTimeSearch, isExporting],
+  );
+  const filteredInstallments = useMemo(
+    () => filterItemsByName(editableInstallments, isExporting ? "" : installmentSearch),
+    [editableInstallments, installmentSearch, isExporting],
+  );
+  const isOneTimeSearching = !isExporting && oneTimeSearch.trim().length > 0;
+  const isInstallmentSearching = !isExporting && installmentSearch.trim().length > 0;
   const generatedAt = useMemo(() => new Date(), []);
   const reportPeriodLabel = useMemo(() => {
     if (!rows.length) return `${formatMonthLabel(scenario.meta.baseMonth)} 起`;
@@ -3555,6 +3742,32 @@ export default function PersonalFinanceCashflowSimulator() {
         onAction: () => restoreInstallment(snapshot, index),
       });
     }
+  };
+
+  const expandAllOneTime = () => {
+    setOpenOneTimeItemIds(
+      scenario.oneTimeItems.reduce((acc, item) => {
+        acc[item.id] = true;
+        return acc;
+      }, {}),
+    );
+  };
+
+  const collapseAllOneTime = () => {
+    setOpenOneTimeItemIds({});
+  };
+
+  const expandAllInstallments = () => {
+    setOpenInstallmentItemIds(
+      scenario.installments.reduce((acc, item) => {
+        acc[item.id] = true;
+        return acc;
+      }, {}),
+    );
+  };
+
+  const collapseAllInstallments = () => {
+    setOpenInstallmentItemIds({});
   };
 
   const duplicateOneTimeItem = (id) => {
@@ -4282,202 +4495,239 @@ export default function PersonalFinanceCashflowSimulator() {
                     ]}
                   />
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleOneTimeDragEnd}
-                  >
-                    <SortableContext
-                      items={scenario.oneTimeItems.map((item) => item.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {scenario.oneTimeItems.map((item) => {
-                        const itemIsOpen = Boolean(openOneTimeItemIds[item.id]);
-                        const isIncome = item.type === "income";
-                        const accent = isIncome ? "#16a34a" : "#dc2626";
-                        const categoryMeta = CATEGORY_META[item.category] || CATEGORY_META.other;
-                        const chipColor = isIncome ? "#15803d" : categoryMeta.color;
-                        return (
-                          <SortableItemShell key={item.id} id={item.id}>
-                            <div
-                              style={{
-                                ...styles.item,
-                                borderLeft: `4px solid ${accent}`,
-                                padding: "10px 12px",
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setOpenOneTimeItemIds((current) => ({
-                                      ...current,
-                                      [item.id]: !current[item.id],
-                                    }))
-                                  }
-                                  aria-expanded={itemIsOpen}
-                                  style={itemToggleStyle}
+                  <>
+                    <ListToolbar
+                      query={oneTimeSearch}
+                      onQueryChange={setOneTimeSearch}
+                      totalCount={scenario.oneTimeItems.length}
+                      filteredCount={filteredOneTimeItems.length}
+                      onExpandAll={expandAllOneTime}
+                      onCollapseAll={collapseAllOneTime}
+                      disabled={readonlyShared}
+                      searchPlaceholder="搜尋單筆收支名稱"
+                    />
+                    {filteredOneTimeItems.length === 0 ? (
+                      <SearchEmptyState
+                        query={oneTimeSearch.trim()}
+                        onClear={() => setOneTimeSearch("")}
+                      />
+                    ) : (
+                      <div
+                        style={listScrollContainerStyle(
+                          !isExporting && filteredOneTimeItems.length > LIST_SCROLL_THRESHOLD,
+                        )}
+                      >
+                        <DndContext
+                          sensors={sensors}
+                          collisionDetection={closestCenter}
+                          onDragEnd={handleOneTimeDragEnd}
+                        >
+                          <SortableContext
+                            items={filteredOneTimeItems.map((item) => item.id)}
+                            strategy={verticalListSortingStrategy}
+                          >
+                            {filteredOneTimeItems.map((item) => {
+                              const itemIsOpen = Boolean(openOneTimeItemIds[item.id]);
+                              const isIncome = item.type === "income";
+                              const accent = isIncome ? "#16a34a" : "#dc2626";
+                              const categoryMeta =
+                                CATEGORY_META[item.category] || CATEGORY_META.other;
+                              const chipColor = isIncome ? "#15803d" : categoryMeta.color;
+                              return (
+                                <SortableItemShell
+                                  key={item.id}
+                                  id={item.id}
+                                  disabled={isOneTimeSearching}
                                 >
-                                  <Chevron open={itemIsOpen} />
                                   <div
                                     style={{
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: "2px",
-                                      minWidth: 0,
-                                      flex: 1,
+                                      ...styles.item,
+                                      borderLeft: `4px solid ${accent}`,
+                                      padding: "10px 12px",
                                     }}
                                   >
-                                    <span
-                                      style={{
-                                        fontWeight: 800,
-                                        color: "#0f172a",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                      }}
+                                    <div
+                                      style={{ display: "flex", alignItems: "center", gap: "10px" }}
                                     >
-                                      {item.name}
-                                    </span>
-                                    <span
-                                      style={{
-                                        fontSize: "12px",
-                                        color: "#475569",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        flexWrap: "wrap",
-                                        gap: "6px",
-                                      }}
-                                    >
-                                      <span style={{ fontWeight: 800, color: accent }}>
-                                        {isIncome ? "+" : "−"}
-                                        {maskCurrency(item.amount, hiddenAmounts)}
-                                      </span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span>{formatMonthLabel(item.month, true)}</span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setOpenOneTimeItemIds((current) => ({
+                                            ...current,
+                                            [item.id]: !current[item.id],
+                                          }))
+                                        }
+                                        aria-expanded={itemIsOpen}
+                                        style={itemToggleStyle}
+                                      >
+                                        <Chevron open={itemIsOpen} />
+                                        <div
+                                          style={{
+                                            display: "flex",
+                                            flexDirection: "column",
+                                            gap: "2px",
+                                            minWidth: 0,
+                                            flex: 1,
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              fontWeight: 800,
+                                              color: "#0f172a",
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {item.name}
+                                          </span>
+                                          <span
+                                            style={{
+                                              fontSize: "12px",
+                                              color: "#475569",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              flexWrap: "wrap",
+                                              gap: "6px",
+                                            }}
+                                          >
+                                            <span style={{ fontWeight: 800, color: accent }}>
+                                              {isIncome ? "+" : "−"}
+                                              {maskCurrency(item.amount, hiddenAmounts)}
+                                            </span>
+                                            <span style={{ color: "#cbd5e1" }}>·</span>
+                                            <span>{formatMonthLabel(item.month, true)}</span>
+                                            <span style={{ color: "#cbd5e1" }}>·</span>
+                                            <span
+                                              style={{
+                                                ...styles.chip,
+                                                padding: "1px 8px",
+                                                fontSize: "11px",
+                                                color: chipColor,
+                                                borderColor: `${chipColor}33`,
+                                                background: `${chipColor}10`,
+                                              }}
+                                            >
+                                              {isIncome ? "收入" : categoryMeta.label}
+                                            </span>
+                                          </span>
+                                        </div>
+                                      </button>
+                                      <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                                        <InteractiveButton
+                                          variant="tinyButton"
+                                          onClick={() => duplicateOneTimeItem(item.id)}
+                                          disabled={readonlyShared}
+                                          style={{
+                                            padding: "6px",
+                                            borderRadius: "10px",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                          }}
+                                          title="複製"
+                                          aria-label="複製"
+                                        >
+                                          <CopyIcon />
+                                        </InteractiveButton>
+                                        <InteractiveButton
+                                          variant="dangerButton"
+                                          onClick={() => removeOneTimeItem(item.id)}
+                                          disabled={readonlyShared}
+                                          style={{
+                                            padding: "6px",
+                                            borderRadius: "10px",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                          }}
+                                          title="刪除"
+                                          aria-label="刪除"
+                                        >
+                                          <TrashIcon />
+                                        </InteractiveButton>
+                                      </div>
+                                    </div>
+                                    <Collapsible open={itemIsOpen}>
+                                      <div
                                         style={{
-                                          ...styles.chip,
-                                          padding: "1px 8px",
-                                          fontSize: "11px",
-                                          color: chipColor,
-                                          borderColor: `${chipColor}33`,
-                                          background: `${chipColor}10`,
+                                          paddingTop: "12px",
+                                          borderTop: "1px dashed #e2e8f0",
                                         }}
                                       >
-                                        {isIncome ? "收入" : categoryMeta.label}
-                                      </span>
-                                    </span>
+                                        <TextField
+                                          label="項目名稱"
+                                          value={item.name}
+                                          onChange={(value) =>
+                                            updateOneTimeItem(item.id, { name: value })
+                                          }
+                                          disabled={readonlyShared}
+                                        />
+                                        <div className={`${inputGridClassName} mt-2.5`}>
+                                          <Field
+                                            label="金額"
+                                            value={item.amount}
+                                            onChange={(value) =>
+                                              updateOneTimeItem(item.id, { amount: value })
+                                            }
+                                            step={1000}
+                                            disabled={readonlyShared}
+                                          />
+                                          <MonthPicker
+                                            label="月份"
+                                            value={item.month}
+                                            onChange={(value) =>
+                                              updateOneTimeItem(item.id, { month: value })
+                                            }
+                                            baseMonth={scenario.meta.baseMonth}
+                                            horizon={scenario.basics.monthsToProject}
+                                            disabled={readonlyShared}
+                                          />
+                                          <div>
+                                            <label style={styles.label}>類型</label>
+                                            <InteractiveSelect
+                                              value={item.type}
+                                              disabled={readonlyShared}
+                                              onChange={(event) =>
+                                                updateOneTimeItem(item.id, {
+                                                  type: event.target.value,
+                                                })
+                                              }
+                                            >
+                                              <option value="income">收入</option>
+                                              <option value="expense">支出</option>
+                                            </InteractiveSelect>
+                                          </div>
+                                          <div>
+                                            <label style={styles.label}>分類</label>
+                                            <InteractiveSelect
+                                              value={item.category}
+                                              disabled={readonlyShared}
+                                              onChange={(event) =>
+                                                updateOneTimeItem(item.id, {
+                                                  category: event.target.value,
+                                                })
+                                              }
+                                            >
+                                              {CATEGORY_OPTIONS.map((key) => (
+                                                <option key={key} value={key}>
+                                                  {CATEGORY_META[key].label}
+                                                </option>
+                                              ))}
+                                            </InteractiveSelect>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </Collapsible>
                                   </div>
-                                </button>
-                                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                                  <InteractiveButton
-                                    variant="tinyButton"
-                                    onClick={() => duplicateOneTimeItem(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="複製"
-                                    aria-label="複製"
-                                  >
-                                    <CopyIcon />
-                                  </InteractiveButton>
-                                  <InteractiveButton
-                                    variant="dangerButton"
-                                    onClick={() => removeOneTimeItem(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="刪除"
-                                    aria-label="刪除"
-                                  >
-                                    <TrashIcon />
-                                  </InteractiveButton>
-                                </div>
-                              </div>
-                              <Collapsible open={itemIsOpen}>
-                                <div
-                                  style={{ paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}
-                                >
-                                  <TextField
-                                    label="項目名稱"
-                                    value={item.name}
-                                    onChange={(value) =>
-                                      updateOneTimeItem(item.id, { name: value })
-                                    }
-                                    disabled={readonlyShared}
-                                  />
-                                  <div className={`${inputGridClassName} mt-2.5`}>
-                                    <Field
-                                      label="金額"
-                                      value={item.amount}
-                                      onChange={(value) =>
-                                        updateOneTimeItem(item.id, { amount: value })
-                                      }
-                                      step={1000}
-                                      disabled={readonlyShared}
-                                    />
-                                    <MonthPicker
-                                      label="月份"
-                                      value={item.month}
-                                      onChange={(value) =>
-                                        updateOneTimeItem(item.id, { month: value })
-                                      }
-                                      baseMonth={scenario.meta.baseMonth}
-                                      horizon={scenario.basics.monthsToProject}
-                                      disabled={readonlyShared}
-                                    />
-                                    <div>
-                                      <label style={styles.label}>類型</label>
-                                      <InteractiveSelect
-                                        value={item.type}
-                                        disabled={readonlyShared}
-                                        onChange={(event) =>
-                                          updateOneTimeItem(item.id, { type: event.target.value })
-                                        }
-                                      >
-                                        <option value="income">收入</option>
-                                        <option value="expense">支出</option>
-                                      </InteractiveSelect>
-                                    </div>
-                                    <div>
-                                      <label style={styles.label}>分類</label>
-                                      <InteractiveSelect
-                                        value={item.category}
-                                        disabled={readonlyShared}
-                                        onChange={(event) =>
-                                          updateOneTimeItem(item.id, {
-                                            category: event.target.value,
-                                          })
-                                        }
-                                      >
-                                        {CATEGORY_OPTIONS.map((key) => (
-                                          <option key={key} value={key}>
-                                            {CATEGORY_META[key].label}
-                                          </option>
-                                        ))}
-                                      </InteractiveSelect>
-                                    </div>
-                                  </div>
-                                </div>
-                              </Collapsible>
-                            </div>
-                          </SortableItemShell>
-                        );
-                      })}
-                    </SortableContext>
-                  </DndContext>
+                                </SortableItemShell>
+                              );
+                            })}
+                          </SortableContext>
+                        </DndContext>
+                      </div>
+                    )}
+                  </>
                 )}
               </Collapsible>
             </InteractiveSurface>
