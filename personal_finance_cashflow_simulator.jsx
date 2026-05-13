@@ -23,7 +23,7 @@ import { useSnackbar } from "./hooks/useSnackbar.js";
 import UndoSnackbar from "./components/UndoSnackbar.jsx";
 import KeyboardShortcutsDialog from "./components/KeyboardShortcutsDialog.jsx";
 import { clampDropdownRight, clampTooltipLeft } from "./lib/clampViewport.js";
-import { DATA_MANAGEMENT_ACTIONS, getImportReplaceNotice } from "./lib/dataManagementOptions.js";
+import { getImportReplaceNotice } from "./lib/dataManagementOptions.js";
 import { makeItemId, syncItemIdSequenceFromScenario } from "./lib/itemIds.js";
 import { describeHydrationDecision } from "./lib/hydrationNotice.js";
 import { computeImportDiff } from "./lib/importDiff.js";
@@ -543,6 +543,20 @@ function ListEmptyState({ icon, title, description, actions }) {
       ) : null}
     </div>
   );
+}
+
+const LIST_SCROLL_THRESHOLD = 4;
+
+function listScrollContainerStyle(active) {
+  if (!active) return undefined;
+  return {
+    maxHeight: "60vh",
+    overflowY: "auto",
+  };
+}
+
+function listScrollContainerClassName(active) {
+  return active ? "flowra-list-scroll" : undefined;
 }
 
 function EmptyChartState() {
@@ -1141,6 +1155,85 @@ function DownloadIcon({ size = 16 }) {
   );
 }
 
+function PlusIcon({ size = 14 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 2 V 12" />
+      <path d="M2 7 H 12" />
+    </svg>
+  );
+}
+
+function UploadIcon({ size = 14 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 11 V 3" />
+      <path d="M3.5 6.5 L7 3 L10.5 6.5" />
+      <path d="M2.5 12 H 11.5" />
+    </svg>
+  );
+}
+
+function CloudUploadIcon({ size = 16 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 11 A 3 3 0 0 1 4.8 5 A 4 4 0 0 1 12.4 6 A 2.6 2.6 0 0 1 12 11" />
+      <path d="M8 13.5 V 7.5" />
+      <path d="M6 9.5 L 8 7.5 L 10 9.5" />
+    </svg>
+  );
+}
+
+function CloudDownloadIcon({ size = 16 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 10 A 3 3 0 0 1 4.8 4 A 4 4 0 0 1 12.4 5 A 2.6 2.6 0 0 1 12 10" />
+      <path d="M8 7.5 V 13.5" />
+      <path d="M6 11.5 L 8 13.5 L 10 11.5" />
+    </svg>
+  );
+}
+
 function Collapsible({ open, children, topGap = 12 }) {
   return (
     <div
@@ -1214,6 +1307,17 @@ const itemToggleStyle = {
   border: "none",
   cursor: "pointer",
   textAlign: "left",
+};
+
+const iconButtonStyle = {
+  width: "32px",
+  height: "32px",
+  padding: 0,
+  borderRadius: "10px",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
 };
 
 function SettingsGroup({ title, accent, last, children }) {
@@ -3963,6 +4067,14 @@ export default function PersonalFinanceCashflowSimulator() {
           -moz-appearance: textfield;
           appearance: textfield;
         }
+        .flowra-list-scroll {
+          scrollbar-width: none;
+        }
+        .flowra-list-scroll::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
+        }
       `}</style>
       <div
         style={{ ...styles.container, ...styles.chartTheme }}
@@ -4247,8 +4359,11 @@ export default function PersonalFinanceCashflowSimulator() {
                   variant="smallButton"
                   onClick={addOneTimeItem}
                   disabled={readonlyShared}
+                  style={iconButtonStyle}
+                  title="新增單筆收支"
+                  aria-label="新增單筆收支"
                 >
-                  + 新增
+                  <PlusIcon />
                 </InteractiveButton>
               </div>
               <Collapsible open={isOneTimeOpen}>
@@ -4277,207 +4392,224 @@ export default function PersonalFinanceCashflowSimulator() {
                         onClick={addOneTimeItem}
                         disabled={readonlyShared}
                       >
-                        立即新增第一筆
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <PlusIcon />
+                          立即新增第一筆
+                        </span>
                       </InteractiveButton>,
                     ]}
                   />
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleOneTimeDragEnd}
+                  <div
+                    style={listScrollContainerStyle(
+                      !isExporting && scenario.oneTimeItems.length > LIST_SCROLL_THRESHOLD,
+                    )}
+                    className={listScrollContainerClassName(
+                      !isExporting && scenario.oneTimeItems.length > LIST_SCROLL_THRESHOLD,
+                    )}
                   >
-                    <SortableContext
-                      items={scenario.oneTimeItems.map((item) => item.id)}
-                      strategy={verticalListSortingStrategy}
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={handleOneTimeDragEnd}
                     >
-                      {scenario.oneTimeItems.map((item) => {
-                        const itemIsOpen = Boolean(openOneTimeItemIds[item.id]);
-                        const isIncome = item.type === "income";
-                        const accent = isIncome ? "#16a34a" : "#dc2626";
-                        const categoryMeta = CATEGORY_META[item.category] || CATEGORY_META.other;
-                        const chipColor = isIncome ? "#15803d" : categoryMeta.color;
-                        return (
-                          <SortableItemShell key={item.id} id={item.id}>
-                            <div
-                              style={{
-                                ...styles.item,
-                                borderLeft: `4px solid ${accent}`,
-                                padding: "10px 12px",
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setOpenOneTimeItemIds((current) => ({
-                                      ...current,
-                                      [item.id]: !current[item.id],
-                                    }))
-                                  }
-                                  aria-expanded={itemIsOpen}
-                                  style={itemToggleStyle}
-                                >
-                                  <Chevron open={itemIsOpen} />
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: "2px",
-                                      minWidth: 0,
-                                      flex: 1,
-                                    }}
+                      <SortableContext
+                        items={scenario.oneTimeItems.map((item) => item.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {scenario.oneTimeItems.map((item) => {
+                          const itemIsOpen = Boolean(openOneTimeItemIds[item.id]);
+                          const isIncome = item.type === "income";
+                          const accent = isIncome ? "#16a34a" : "#dc2626";
+                          const categoryMeta = CATEGORY_META[item.category] || CATEGORY_META.other;
+                          const chipColor = isIncome ? "#15803d" : categoryMeta.color;
+                          return (
+                            <SortableItemShell key={item.id} id={item.id}>
+                              <div
+                                style={{
+                                  ...styles.item,
+                                  borderLeft: `4px solid ${accent}`,
+                                  padding: "10px 12px",
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setOpenOneTimeItemIds((current) => ({
+                                        ...current,
+                                        [item.id]: !current[item.id],
+                                      }))
+                                    }
+                                    aria-expanded={itemIsOpen}
+                                    style={itemToggleStyle}
                                   >
-                                    <span
+                                    <Chevron open={itemIsOpen} />
+                                    <div
                                       style={{
-                                        fontWeight: 800,
-                                        color: "#0f172a",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                      }}
-                                    >
-                                      {item.name}
-                                    </span>
-                                    <span
-                                      style={{
-                                        fontSize: "12px",
-                                        color: "#475569",
                                         display: "flex",
-                                        alignItems: "center",
-                                        flexWrap: "wrap",
-                                        gap: "6px",
+                                        flexDirection: "column",
+                                        gap: "2px",
+                                        minWidth: 0,
+                                        flex: 1,
                                       }}
                                     >
-                                      <span style={{ fontWeight: 800, color: accent }}>
-                                        {isIncome ? "+" : "−"}
-                                        {maskCurrency(item.amount, hiddenAmounts)}
-                                      </span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span>{formatMonthLabel(item.month, true)}</span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
                                       <span
                                         style={{
-                                          ...styles.chip,
-                                          padding: "1px 8px",
-                                          fontSize: "11px",
-                                          color: chipColor,
-                                          borderColor: `${chipColor}33`,
-                                          background: `${chipColor}10`,
+                                          fontWeight: 800,
+                                          color: "#0f172a",
+                                          overflow: "hidden",
+                                          textOverflow: "ellipsis",
+                                          whiteSpace: "nowrap",
                                         }}
                                       >
-                                        {isIncome ? "收入" : categoryMeta.label}
+                                        {item.name}
                                       </span>
-                                    </span>
+                                      <span
+                                        style={{
+                                          fontSize: "12px",
+                                          color: "#475569",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          flexWrap: "wrap",
+                                          gap: "6px",
+                                        }}
+                                      >
+                                        <span style={{ fontWeight: 800, color: accent }}>
+                                          {isIncome ? "+" : "−"}
+                                          {maskCurrency(item.amount, hiddenAmounts)}
+                                        </span>
+                                        <span style={{ color: "#cbd5e1" }}>·</span>
+                                        <span>{formatMonthLabel(item.month, true)}</span>
+                                        <span style={{ color: "#cbd5e1" }}>·</span>
+                                        <span
+                                          style={{
+                                            ...styles.chip,
+                                            padding: "1px 8px",
+                                            fontSize: "11px",
+                                            color: chipColor,
+                                            borderColor: `${chipColor}33`,
+                                            background: `${chipColor}10`,
+                                          }}
+                                        >
+                                          {isIncome ? "收入" : categoryMeta.label}
+                                        </span>
+                                      </span>
+                                    </div>
+                                  </button>
+                                  <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                                    <InteractiveButton
+                                      variant="tinyButton"
+                                      onClick={() => duplicateOneTimeItem(item.id)}
+                                      disabled={readonlyShared}
+                                      style={{
+                                        padding: "6px",
+                                        borderRadius: "10px",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                      }}
+                                      title="複製"
+                                      aria-label="複製"
+                                    >
+                                      <CopyIcon />
+                                    </InteractiveButton>
+                                    <InteractiveButton
+                                      variant="dangerButton"
+                                      onClick={() => removeOneTimeItem(item.id)}
+                                      disabled={readonlyShared}
+                                      style={{
+                                        padding: "6px",
+                                        borderRadius: "10px",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                      }}
+                                      title="刪除"
+                                      aria-label="刪除"
+                                    >
+                                      <TrashIcon />
+                                    </InteractiveButton>
                                   </div>
-                                </button>
-                                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                                  <InteractiveButton
-                                    variant="tinyButton"
-                                    onClick={() => duplicateOneTimeItem(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="複製"
-                                    aria-label="複製"
-                                  >
-                                    <CopyIcon />
-                                  </InteractiveButton>
-                                  <InteractiveButton
-                                    variant="dangerButton"
-                                    onClick={() => removeOneTimeItem(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="刪除"
-                                    aria-label="刪除"
-                                  >
-                                    <TrashIcon />
-                                  </InteractiveButton>
                                 </div>
+                                <Collapsible open={itemIsOpen}>
+                                  <div
+                                    style={{
+                                      paddingTop: "12px",
+                                      borderTop: "1px dashed #e2e8f0",
+                                    }}
+                                  >
+                                    <TextField
+                                      label="項目名稱"
+                                      value={item.name}
+                                      onChange={(value) =>
+                                        updateOneTimeItem(item.id, { name: value })
+                                      }
+                                      disabled={readonlyShared}
+                                    />
+                                    <div className={`${inputGridClassName} mt-2.5`}>
+                                      <Field
+                                        label="金額"
+                                        value={item.amount}
+                                        onChange={(value) =>
+                                          updateOneTimeItem(item.id, { amount: value })
+                                        }
+                                        step={1000}
+                                        disabled={readonlyShared}
+                                      />
+                                      <MonthPicker
+                                        label="月份"
+                                        value={item.month}
+                                        onChange={(value) =>
+                                          updateOneTimeItem(item.id, { month: value })
+                                        }
+                                        baseMonth={scenario.meta.baseMonth}
+                                        horizon={scenario.basics.monthsToProject}
+                                        disabled={readonlyShared}
+                                      />
+                                      <div>
+                                        <label style={styles.label}>類型</label>
+                                        <InteractiveSelect
+                                          value={item.type}
+                                          disabled={readonlyShared}
+                                          onChange={(event) =>
+                                            updateOneTimeItem(item.id, {
+                                              type: event.target.value,
+                                            })
+                                          }
+                                        >
+                                          <option value="income">收入</option>
+                                          <option value="expense">支出</option>
+                                        </InteractiveSelect>
+                                      </div>
+                                      <div>
+                                        <label style={styles.label}>分類</label>
+                                        <InteractiveSelect
+                                          value={item.category}
+                                          disabled={readonlyShared}
+                                          onChange={(event) =>
+                                            updateOneTimeItem(item.id, {
+                                              category: event.target.value,
+                                            })
+                                          }
+                                        >
+                                          {CATEGORY_OPTIONS.map((key) => (
+                                            <option key={key} value={key}>
+                                              {CATEGORY_META[key].label}
+                                            </option>
+                                          ))}
+                                        </InteractiveSelect>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </Collapsible>
                               </div>
-                              <Collapsible open={itemIsOpen}>
-                                <div
-                                  style={{ paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}
-                                >
-                                  <TextField
-                                    label="項目名稱"
-                                    value={item.name}
-                                    onChange={(value) =>
-                                      updateOneTimeItem(item.id, { name: value })
-                                    }
-                                    disabled={readonlyShared}
-                                  />
-                                  <div className={`${inputGridClassName} mt-2.5`}>
-                                    <Field
-                                      label="金額"
-                                      value={item.amount}
-                                      onChange={(value) =>
-                                        updateOneTimeItem(item.id, { amount: value })
-                                      }
-                                      step={1000}
-                                      disabled={readonlyShared}
-                                    />
-                                    <MonthPicker
-                                      label="月份"
-                                      value={item.month}
-                                      onChange={(value) =>
-                                        updateOneTimeItem(item.id, { month: value })
-                                      }
-                                      baseMonth={scenario.meta.baseMonth}
-                                      horizon={scenario.basics.monthsToProject}
-                                      disabled={readonlyShared}
-                                    />
-                                    <div>
-                                      <label style={styles.label}>類型</label>
-                                      <InteractiveSelect
-                                        value={item.type}
-                                        disabled={readonlyShared}
-                                        onChange={(event) =>
-                                          updateOneTimeItem(item.id, { type: event.target.value })
-                                        }
-                                      >
-                                        <option value="income">收入</option>
-                                        <option value="expense">支出</option>
-                                      </InteractiveSelect>
-                                    </div>
-                                    <div>
-                                      <label style={styles.label}>分類</label>
-                                      <InteractiveSelect
-                                        value={item.category}
-                                        disabled={readonlyShared}
-                                        onChange={(event) =>
-                                          updateOneTimeItem(item.id, {
-                                            category: event.target.value,
-                                          })
-                                        }
-                                      >
-                                        {CATEGORY_OPTIONS.map((key) => (
-                                          <option key={key} value={key}>
-                                            {CATEGORY_META[key].label}
-                                          </option>
-                                        ))}
-                                      </InteractiveSelect>
-                                    </div>
-                                  </div>
-                                </div>
-                              </Collapsible>
-                            </div>
-                          </SortableItemShell>
-                        );
-                      })}
-                    </SortableContext>
-                  </DndContext>
+                            </SortableItemShell>
+                          );
+                        })}
+                      </SortableContext>
+                    </DndContext>
+                  </div>
                 )}
               </Collapsible>
             </InteractiveSurface>
@@ -4503,15 +4635,21 @@ export default function PersonalFinanceCashflowSimulator() {
                     variant="smallButton"
                     onClick={() => setIsBulkImportOpen((value) => !value)}
                     disabled={readonlyShared}
+                    style={iconButtonStyle}
+                    title="批次匯入分期"
+                    aria-label="批次匯入分期"
                   >
-                    批次匯入
+                    <UploadIcon />
                   </InteractiveButton>
                   <InteractiveButton
                     variant="smallButton"
                     onClick={addInstallment}
                     disabled={readonlyShared}
+                    style={iconButtonStyle}
+                    title="新增分期"
+                    aria-label="新增分期"
                   >
-                    + 新增
+                    <PlusIcon />
                   </InteractiveButton>
                 </div>
               </div>
@@ -4542,7 +4680,10 @@ export default function PersonalFinanceCashflowSimulator() {
                         onClick={addInstallment}
                         disabled={readonlyShared}
                       >
-                        + 新增分期
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <PlusIcon />
+                          新增分期
+                        </span>
                       </InteractiveButton>,
                       <InteractiveButton
                         key="bulk"
@@ -4550,319 +4691,348 @@ export default function PersonalFinanceCashflowSimulator() {
                         onClick={() => setIsBulkImportOpen(true)}
                         disabled={readonlyShared}
                       >
-                        批次匯入
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <UploadIcon />
+                          批次匯入
+                        </span>
                       </InteractiveButton>,
                     ]}
                   />
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleInstallmentDragEnd}
+                  <div
+                    style={listScrollContainerStyle(
+                      !isExporting && editableInstallments.length > LIST_SCROLL_THRESHOLD,
+                    )}
+                    className={listScrollContainerClassName(
+                      !isExporting && editableInstallments.length > LIST_SCROLL_THRESHOLD,
+                    )}
                   >
-                    <SortableContext
-                      items={editableInstallments.map((item) => item.id)}
-                      strategy={verticalListSortingStrategy}
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={handleInstallmentDragEnd}
                     >
-                      {editableInstallments.map((item) => {
-                        const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
-                        const endMonth = addMonths(item.startMonth, item.terms - 1);
-                        return (
-                          <SortableItemShell key={item.id} id={item.id}>
-                            <div
-                              style={{
-                                ...styles.item,
-                                borderLeft: "4px solid #0284c7",
-                                padding: "10px 12px",
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setOpenInstallmentItemIds((current) => ({
-                                      ...current,
-                                      [item.id]: !current[item.id],
-                                    }))
-                                  }
-                                  aria-expanded={itemIsOpen}
-                                  style={itemToggleStyle}
-                                >
-                                  <Chevron open={itemIsOpen} />
+                      <SortableContext
+                        items={editableInstallments.map((item) => item.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {editableInstallments.map((item) => {
+                          const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
+                          const endMonth = addMonths(item.startMonth, item.terms - 1);
+                          return (
+                            <SortableItemShell key={item.id} id={item.id}>
+                              <div
+                                style={{
+                                  ...styles.item,
+                                  borderLeft: "4px solid #0284c7",
+                                  padding: "10px 12px",
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setOpenInstallmentItemIds((current) => ({
+                                        ...current,
+                                        [item.id]: !current[item.id],
+                                      }))
+                                    }
+                                    aria-expanded={itemIsOpen}
+                                    style={itemToggleStyle}
+                                  >
+                                    <Chevron open={itemIsOpen} />
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: "2px",
+                                        minWidth: 0,
+                                        flex: 1,
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          fontWeight: 800,
+                                          color: "#0f172a",
+                                          overflow: "hidden",
+                                          textOverflow: "ellipsis",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        {item.name}
+                                      </span>
+                                      <span
+                                        style={{
+                                          fontSize: "12px",
+                                          color: "#475569",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          flexWrap: "wrap",
+                                          gap: "6px",
+                                        }}
+                                      >
+                                        <span style={{ fontWeight: 800, color: "#0284c7" }}>
+                                          月付 {maskCurrency(item.payment, hiddenAmounts)}
+                                        </span>
+                                        <span style={{ color: "#cbd5e1" }}>·</span>
+                                        <span>{item.terms} 期</span>
+                                        <span style={{ color: "#cbd5e1" }}>·</span>
+                                        <span>
+                                          {formatMonthLabel(item.startMonth, true)} →{" "}
+                                          {formatMonthLabel(endMonth, true)}
+                                        </span>
+                                      </span>
+                                    </div>
+                                  </button>
+                                  <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                                    <InteractiveButton
+                                      variant="tinyButton"
+                                      onClick={() => duplicateInstallment(item.id)}
+                                      disabled={readonlyShared}
+                                      style={{
+                                        padding: "6px",
+                                        borderRadius: "10px",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                      }}
+                                      title="複製"
+                                      aria-label="複製"
+                                    >
+                                      <CopyIcon />
+                                    </InteractiveButton>
+                                    <InteractiveButton
+                                      variant="dangerButton"
+                                      onClick={() => removeInstallment(item.id)}
+                                      disabled={readonlyShared}
+                                      style={{
+                                        padding: "6px",
+                                        borderRadius: "10px",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                      }}
+                                      title="刪除"
+                                      aria-label="刪除"
+                                    >
+                                      <TrashIcon />
+                                    </InteractiveButton>
+                                  </div>
+                                </div>
+                                <Collapsible open={itemIsOpen}>
                                   <div
                                     style={{
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: "2px",
-                                      minWidth: 0,
-                                      flex: 1,
+                                      paddingTop: "12px",
+                                      borderTop: "1px dashed #e2e8f0",
                                     }}
                                   >
-                                    <span
-                                      style={{
-                                        fontWeight: 800,
-                                        color: "#0f172a",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                      }}
-                                    >
-                                      {item.name}
-                                    </span>
-                                    <span
-                                      style={{
-                                        fontSize: "12px",
-                                        color: "#475569",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        flexWrap: "wrap",
-                                        gap: "6px",
-                                      }}
-                                    >
-                                      <span style={{ fontWeight: 800, color: "#0284c7" }}>
-                                        月付 {maskCurrency(item.payment, hiddenAmounts)}
-                                      </span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span>{item.terms} 期</span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span>
-                                        {formatMonthLabel(item.startMonth, true)} →{" "}
-                                        {formatMonthLabel(endMonth, true)}
-                                      </span>
-                                    </span>
+                                    <TextField
+                                      label="項目名稱"
+                                      value={item.name}
+                                      onChange={(value) =>
+                                        updateInstallment(item.id, { name: value })
+                                      }
+                                      disabled={readonlyShared}
+                                    />
+                                    <div className={`${inputGridClassName} mt-2.5`}>
+                                      <Field
+                                        label="本金"
+                                        value={item.principal}
+                                        onChange={(value) =>
+                                          updateInstallment(item.id, { principal: value })
+                                        }
+                                        disabled={readonlyShared}
+                                      />
+                                      <Field
+                                        label="年百分率 APR"
+                                        value={item.apr}
+                                        onChange={(value) =>
+                                          updateInstallment(item.id, { apr: value })
+                                        }
+                                        suffix="%"
+                                        step={0.1}
+                                        precision={1}
+                                        min={0}
+                                        disabled={readonlyShared}
+                                      />
+                                      <Field
+                                        label="期數"
+                                        value={item.terms}
+                                        onChange={(value) =>
+                                          updateInstallment(item.id, {
+                                            terms: Math.max(1, Math.round(value)),
+                                          })
+                                        }
+                                        step={1}
+                                        min={1}
+                                        disabled={readonlyShared}
+                                      />
+                                      <MonthPicker
+                                        label="開始月份"
+                                        value={item.startMonth}
+                                        onChange={(value) =>
+                                          updateInstallment(item.id, { startMonth: value })
+                                        }
+                                        baseMonth={scenario.meta.baseMonth}
+                                        horizon={scenario.basics.monthsToProject}
+                                        disabled={readonlyShared}
+                                      />
+                                    </div>
+                                    <div style={{ ...styles.mutedBox, ...styles.miniGrid }}>
+                                      <div>
+                                        <div style={styles.statLabel}>月付</div>
+                                        <strong>{maskCurrency(item.payment, hiddenAmounts)}</strong>
+                                      </div>
+                                      <div>
+                                        <div style={styles.statLabel}>總繳</div>
+                                        <strong>
+                                          {maskCurrency(item.totalPaid, hiddenAmounts)}
+                                        </strong>
+                                      </div>
+                                      <div>
+                                        <div style={styles.statLabel}>利息</div>
+                                        <strong>
+                                          {maskCurrency(item.interest, hiddenAmounts)}
+                                        </strong>
+                                      </div>
+                                    </div>
                                   </div>
-                                </button>
-                                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                                  <InteractiveButton
-                                    variant="tinyButton"
-                                    onClick={() => duplicateInstallment(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="複製"
-                                    aria-label="複製"
-                                  >
-                                    <CopyIcon />
-                                  </InteractiveButton>
-                                  <InteractiveButton
-                                    variant="dangerButton"
-                                    onClick={() => removeInstallment(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="刪除"
-                                    aria-label="刪除"
-                                  >
-                                    <TrashIcon />
-                                  </InteractiveButton>
-                                </div>
+                                </Collapsible>
                               </div>
-                              <Collapsible open={itemIsOpen}>
-                                <div
-                                  style={{ paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}
-                                >
-                                  <TextField
-                                    label="項目名稱"
-                                    value={item.name}
-                                    onChange={(value) =>
-                                      updateInstallment(item.id, { name: value })
-                                    }
-                                    disabled={readonlyShared}
-                                  />
-                                  <div className={`${inputGridClassName} mt-2.5`}>
-                                    <Field
-                                      label="本金"
-                                      value={item.principal}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, { principal: value })
-                                      }
-                                      disabled={readonlyShared}
-                                    />
-                                    <Field
-                                      label="年百分率 APR"
-                                      value={item.apr}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, { apr: value })
-                                      }
-                                      suffix="%"
-                                      step={0.1}
-                                      precision={1}
-                                      min={0}
-                                      disabled={readonlyShared}
-                                    />
-                                    <Field
-                                      label="期數"
-                                      value={item.terms}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, {
-                                          terms: Math.max(1, Math.round(value)),
-                                        })
-                                      }
-                                      step={1}
-                                      min={1}
-                                      disabled={readonlyShared}
-                                    />
-                                    <MonthPicker
-                                      label="開始月份"
-                                      value={item.startMonth}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, { startMonth: value })
-                                      }
-                                      baseMonth={scenario.meta.baseMonth}
-                                      horizon={scenario.basics.monthsToProject}
-                                      disabled={readonlyShared}
-                                    />
-                                  </div>
-                                  <div style={{ ...styles.mutedBox, ...styles.miniGrid }}>
-                                    <div>
-                                      <div style={styles.statLabel}>月付</div>
-                                      <strong>{maskCurrency(item.payment, hiddenAmounts)}</strong>
-                                    </div>
-                                    <div>
-                                      <div style={styles.statLabel}>總繳</div>
-                                      <strong>{maskCurrency(item.totalPaid, hiddenAmounts)}</strong>
-                                    </div>
-                                    <div>
-                                      <div style={styles.statLabel}>利息</div>
-                                      <strong>{maskCurrency(item.interest, hiddenAmounts)}</strong>
-                                    </div>
-                                  </div>
-                                </div>
-                              </Collapsible>
-                            </div>
-                          </SortableItemShell>
-                        );
-                      })}
-                    </SortableContext>
-                  </DndContext>
+                            </SortableItemShell>
+                          );
+                        })}
+                      </SortableContext>
+                    </DndContext>
+                  </div>
                 )}
               </Collapsible>
             </InteractiveSurface>
 
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <h2 style={styles.cardTitle}>資料管理</h2>
               <div
-                style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  marginBottom: "14px",
+                  flexWrap: "wrap",
+                }}
               >
-                {DATA_MANAGEMENT_ACTIONS.map((action) => {
-                  if (action.key === "syncBackup") {
-                    return (
-                      <InteractiveButton
-                        key={action.key}
-                        onClick={() => syncScenarioToCloud()}
-                        disabled={!cloudFeaturesEnabled}
-                      >
-                        {action.label}
-                      </InteractiveButton>
-                    );
-                  }
-                  if (action.key === "importData") {
-                    return (
-                      <InteractiveButton
-                        key={action.key}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        {action.label}
-                      </InteractiveButton>
-                    );
-                  }
-                  if (action.key === "restoreBackup") {
-                    return (
-                      <InteractiveButton
-                        key={action.key}
-                        onClick={() => refreshCloudBackup({ applyPayload: true })}
-                        disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
-                      >
-                        {isCloudBackupLoading ? "還原中..." : action.label}
-                      </InteractiveButton>
-                    );
-                  }
-                  if (action.key === "exportData") {
-                    return (
-                      <div key={action.key} ref={exportTriggerRef} style={{ position: "relative" }}>
-                        <InteractiveButton
-                          onClick={() => setIsExportMenuOpen((value) => !value)}
-                          aria-expanded={isExportMenuOpen}
-                        >
-                          {action.label}
-                        </InteractiveButton>
-                        {isExportMenuOpen && typeof document !== "undefined"
-                          ? createPortal(
-                              <FloatingSurface
-                                data-export-menu="true"
-                                style={{
-                                  ...styles.dropdownMenu,
-                                  position: "fixed",
-                                  top: exportMenuCoords.top,
-                                  right: exportMenuCoords.right,
-                                  zIndex: 1000,
-                                }}
-                                motionClassName="flowra-surface-enter"
-                              >
-                                <InteractiveButton
-                                  variant="dropdownItem"
-                                  onClick={() => {
-                                    setIsExportMenuOpen(false);
-                                    exportPng();
-                                  }}
-                                >
-                                  下載整頁圖片
-                                </InteractiveButton>
-                                <InteractiveButton
-                                  variant="dropdownItem"
-                                  onClick={() => {
-                                    setIsExportMenuOpen(false);
-                                    exportPdf();
-                                  }}
-                                >
-                                  下載報表
-                                </InteractiveButton>
-                                <InteractiveButton
-                                  variant="dropdownItem"
-                                  onClick={() => {
-                                    setIsExportMenuOpen(false);
-                                    exportExcel();
-                                  }}
-                                >
-                                  下載表格檔
-                                </InteractiveButton>
-                                <InteractiveButton
-                                  variant="dropdownItem"
-                                  onClick={() => {
-                                    setIsExportMenuOpen(false);
-                                    exportJson();
-                                  }}
-                                >
-                                  下載完整資料
-                                </InteractiveButton>
-                                <InteractiveButton
-                                  variant="dropdownItem"
-                                  onClick={() => {
-                                    setIsExportMenuOpen(false);
-                                    printReport();
-                                  }}
-                                >
-                                  列印
-                                </InteractiveButton>
-                              </FloatingSurface>,
-                              document.body,
-                            )
-                          : null}
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
+                <h2 style={{ ...styles.cardTitle, margin: 0 }}>資料管理</h2>
+                <div
+                  className="flowra-no-print flowra-no-report-export"
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    justifyContent: "flex-end",
+                  }}
+                  role="toolbar"
+                  aria-label="資料管理動作"
+                >
+                  <InteractiveButton
+                    onClick={() => syncScenarioToCloud()}
+                    disabled={!cloudFeaturesEnabled}
+                    style={iconButtonStyle}
+                    title="同步備份"
+                    aria-label="同步備份"
+                  >
+                    <CloudUploadIcon />
+                  </InteractiveButton>
+                  <InteractiveButton
+                    onClick={() => refreshCloudBackup({ applyPayload: true })}
+                    disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
+                    style={iconButtonStyle}
+                    title={isCloudBackupLoading ? "還原中..." : "還原備份"}
+                    aria-label={isCloudBackupLoading ? "還原中..." : "還原備份"}
+                  >
+                    <CloudDownloadIcon />
+                  </InteractiveButton>
+                  <InteractiveButton
+                    onClick={() => fileInputRef.current?.click()}
+                    style={iconButtonStyle}
+                    title="匯入資料"
+                    aria-label="匯入資料"
+                  >
+                    <UploadIcon size={16} />
+                  </InteractiveButton>
+                  <div ref={exportTriggerRef} style={{ position: "relative" }}>
+                    <InteractiveButton
+                      onClick={() => setIsExportMenuOpen((value) => !value)}
+                      aria-expanded={isExportMenuOpen}
+                      style={iconButtonStyle}
+                      title="匯出"
+                      aria-label="匯出"
+                    >
+                      <DownloadIcon size={16} />
+                    </InteractiveButton>
+                    {isExportMenuOpen && typeof document !== "undefined"
+                      ? createPortal(
+                          <FloatingSurface
+                            data-export-menu="true"
+                            style={{
+                              ...styles.dropdownMenu,
+                              position: "fixed",
+                              top: exportMenuCoords.top,
+                              right: exportMenuCoords.right,
+                              zIndex: 1000,
+                            }}
+                            motionClassName="flowra-surface-enter"
+                          >
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportPng();
+                              }}
+                            >
+                              下載整頁圖片
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportPdf();
+                              }}
+                            >
+                              下載報表
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportExcel();
+                              }}
+                            >
+                              下載表格檔
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportJson();
+                              }}
+                            >
+                              下載完整資料
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                printReport();
+                              }}
+                            >
+                              列印
+                            </InteractiveButton>
+                          </FloatingSurface>,
+                          document.body,
+                        )
+                      : null}
+                  </div>
+                </div>
               </div>
               <input
                 ref={fileInputRef}
@@ -4871,7 +5041,7 @@ export default function PersonalFinanceCashflowSimulator() {
                 onChange={importJson}
                 style={{ display: "none" }}
               />
-              <div style={{ ...styles.mutedBox, marginTop: "12px" }}>
+              <div style={{ ...styles.mutedBox, marginTop: 0 }}>
                 <div
                   style={{
                     ...styles.metaText,
