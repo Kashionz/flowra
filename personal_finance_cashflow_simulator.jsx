@@ -4805,196 +4805,236 @@ export default function PersonalFinanceCashflowSimulator() {
                     ]}
                   />
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleInstallmentDragEnd}
-                  >
-                    <SortableContext
-                      items={editableInstallments.map((item) => item.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {editableInstallments.map((item) => {
-                        const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
-                        const endMonth = addMonths(item.startMonth, item.terms - 1);
-                        return (
-                          <SortableItemShell key={item.id} id={item.id}>
-                            <div
-                              style={{
-                                ...styles.item,
-                                borderLeft: "4px solid #0284c7",
-                                padding: "10px 12px",
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setOpenInstallmentItemIds((current) => ({
-                                      ...current,
-                                      [item.id]: !current[item.id],
-                                    }))
-                                  }
-                                  aria-expanded={itemIsOpen}
-                                  style={itemToggleStyle}
+                  <>
+                    <ListToolbar
+                      query={installmentSearch}
+                      onQueryChange={setInstallmentSearch}
+                      totalCount={editableInstallments.length}
+                      filteredCount={filteredInstallments.length}
+                      onExpandAll={expandAllInstallments}
+                      onCollapseAll={collapseAllInstallments}
+                      disabled={readonlyShared}
+                      searchPlaceholder="搜尋分期付款名稱"
+                    />
+                    {filteredInstallments.length === 0 ? (
+                      <SearchEmptyState
+                        query={installmentSearch.trim()}
+                        onClear={() => setInstallmentSearch("")}
+                      />
+                    ) : (
+                      <div
+                        style={listScrollContainerStyle(
+                          !isExporting && filteredInstallments.length > LIST_SCROLL_THRESHOLD,
+                        )}
+                      >
+                        <DndContext
+                          sensors={sensors}
+                          collisionDetection={closestCenter}
+                          onDragEnd={handleInstallmentDragEnd}
+                        >
+                          <SortableContext
+                            items={filteredInstallments.map((item) => item.id)}
+                            strategy={verticalListSortingStrategy}
+                          >
+                            {filteredInstallments.map((item) => {
+                              const itemIsOpen = Boolean(openInstallmentItemIds[item.id]);
+                              const endMonth = addMonths(item.startMonth, item.terms - 1);
+                              return (
+                                <SortableItemShell
+                                  key={item.id}
+                                  id={item.id}
+                                  disabled={isInstallmentSearching}
                                 >
-                                  <Chevron open={itemIsOpen} />
                                   <div
                                     style={{
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: "2px",
-                                      minWidth: 0,
-                                      flex: 1,
+                                      ...styles.item,
+                                      borderLeft: "4px solid #0284c7",
+                                      padding: "10px 12px",
                                     }}
                                   >
-                                    <span
-                                      style={{
-                                        fontWeight: 800,
-                                        color: "#0f172a",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                      }}
+                                    <div
+                                      style={{ display: "flex", alignItems: "center", gap: "10px" }}
                                     >
-                                      {item.name}
-                                    </span>
-                                    <span
-                                      style={{
-                                        fontSize: "12px",
-                                        color: "#475569",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        flexWrap: "wrap",
-                                        gap: "6px",
-                                      }}
-                                    >
-                                      <span style={{ fontWeight: 800, color: "#0284c7" }}>
-                                        月付 {maskCurrency(item.payment, hiddenAmounts)}
-                                      </span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span>{item.terms} 期</span>
-                                      <span style={{ color: "#cbd5e1" }}>·</span>
-                                      <span>
-                                        {formatMonthLabel(item.startMonth, true)} →{" "}
-                                        {formatMonthLabel(endMonth, true)}
-                                      </span>
-                                    </span>
-                                  </div>
-                                </button>
-                                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                                  <InteractiveButton
-                                    variant="tinyButton"
-                                    onClick={() => duplicateInstallment(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="複製"
-                                    aria-label="複製"
-                                  >
-                                    <CopyIcon />
-                                  </InteractiveButton>
-                                  <InteractiveButton
-                                    variant="dangerButton"
-                                    onClick={() => removeInstallment(item.id)}
-                                    disabled={readonlyShared}
-                                    style={{
-                                      padding: "6px",
-                                      borderRadius: "10px",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                    }}
-                                    title="刪除"
-                                    aria-label="刪除"
-                                  >
-                                    <TrashIcon />
-                                  </InteractiveButton>
-                                </div>
-                              </div>
-                              <Collapsible open={itemIsOpen}>
-                                <div
-                                  style={{ paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}
-                                >
-                                  <TextField
-                                    label="項目名稱"
-                                    value={item.name}
-                                    onChange={(value) =>
-                                      updateInstallment(item.id, { name: value })
-                                    }
-                                    disabled={readonlyShared}
-                                  />
-                                  <div className={`${inputGridClassName} mt-2.5`}>
-                                    <Field
-                                      label="本金"
-                                      value={item.principal}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, { principal: value })
-                                      }
-                                      disabled={readonlyShared}
-                                    />
-                                    <Field
-                                      label="年百分率 APR"
-                                      value={item.apr}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, { apr: value })
-                                      }
-                                      suffix="%"
-                                      step={0.1}
-                                      precision={1}
-                                      min={0}
-                                      disabled={readonlyShared}
-                                    />
-                                    <Field
-                                      label="期數"
-                                      value={item.terms}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, {
-                                          terms: Math.max(1, Math.round(value)),
-                                        })
-                                      }
-                                      step={1}
-                                      min={1}
-                                      disabled={readonlyShared}
-                                    />
-                                    <MonthPicker
-                                      label="開始月份"
-                                      value={item.startMonth}
-                                      onChange={(value) =>
-                                        updateInstallment(item.id, { startMonth: value })
-                                      }
-                                      baseMonth={scenario.meta.baseMonth}
-                                      horizon={scenario.basics.monthsToProject}
-                                      disabled={readonlyShared}
-                                    />
-                                  </div>
-                                  <div style={{ ...styles.mutedBox, ...styles.miniGrid }}>
-                                    <div>
-                                      <div style={styles.statLabel}>月付</div>
-                                      <strong>{maskCurrency(item.payment, hiddenAmounts)}</strong>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setOpenInstallmentItemIds((current) => ({
+                                            ...current,
+                                            [item.id]: !current[item.id],
+                                          }))
+                                        }
+                                        aria-expanded={itemIsOpen}
+                                        style={itemToggleStyle}
+                                      >
+                                        <Chevron open={itemIsOpen} />
+                                        <div
+                                          style={{
+                                            display: "flex",
+                                            flexDirection: "column",
+                                            gap: "2px",
+                                            minWidth: 0,
+                                            flex: 1,
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              fontWeight: 800,
+                                              color: "#0f172a",
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {item.name}
+                                          </span>
+                                          <span
+                                            style={{
+                                              fontSize: "12px",
+                                              color: "#475569",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              flexWrap: "wrap",
+                                              gap: "6px",
+                                            }}
+                                          >
+                                            <span style={{ fontWeight: 800, color: "#0284c7" }}>
+                                              月付 {maskCurrency(item.payment, hiddenAmounts)}
+                                            </span>
+                                            <span style={{ color: "#cbd5e1" }}>·</span>
+                                            <span>{item.terms} 期</span>
+                                            <span style={{ color: "#cbd5e1" }}>·</span>
+                                            <span>
+                                              {formatMonthLabel(item.startMonth, true)} →{" "}
+                                              {formatMonthLabel(endMonth, true)}
+                                            </span>
+                                          </span>
+                                        </div>
+                                      </button>
+                                      <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                                        <InteractiveButton
+                                          variant="tinyButton"
+                                          onClick={() => duplicateInstallment(item.id)}
+                                          disabled={readonlyShared}
+                                          style={{
+                                            padding: "6px",
+                                            borderRadius: "10px",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                          }}
+                                          title="複製"
+                                          aria-label="複製"
+                                        >
+                                          <CopyIcon />
+                                        </InteractiveButton>
+                                        <InteractiveButton
+                                          variant="dangerButton"
+                                          onClick={() => removeInstallment(item.id)}
+                                          disabled={readonlyShared}
+                                          style={{
+                                            padding: "6px",
+                                            borderRadius: "10px",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                          }}
+                                          title="刪除"
+                                          aria-label="刪除"
+                                        >
+                                          <TrashIcon />
+                                        </InteractiveButton>
+                                      </div>
                                     </div>
-                                    <div>
-                                      <div style={styles.statLabel}>總繳</div>
-                                      <strong>{maskCurrency(item.totalPaid, hiddenAmounts)}</strong>
-                                    </div>
-                                    <div>
-                                      <div style={styles.statLabel}>利息</div>
-                                      <strong>{maskCurrency(item.interest, hiddenAmounts)}</strong>
-                                    </div>
+                                    <Collapsible open={itemIsOpen}>
+                                      <div
+                                        style={{
+                                          paddingTop: "12px",
+                                          borderTop: "1px dashed #e2e8f0",
+                                        }}
+                                      >
+                                        <TextField
+                                          label="項目名稱"
+                                          value={item.name}
+                                          onChange={(value) =>
+                                            updateInstallment(item.id, { name: value })
+                                          }
+                                          disabled={readonlyShared}
+                                        />
+                                        <div className={`${inputGridClassName} mt-2.5`}>
+                                          <Field
+                                            label="本金"
+                                            value={item.principal}
+                                            onChange={(value) =>
+                                              updateInstallment(item.id, { principal: value })
+                                            }
+                                            disabled={readonlyShared}
+                                          />
+                                          <Field
+                                            label="年百分率 APR"
+                                            value={item.apr}
+                                            onChange={(value) =>
+                                              updateInstallment(item.id, { apr: value })
+                                            }
+                                            suffix="%"
+                                            step={0.1}
+                                            precision={1}
+                                            min={0}
+                                            disabled={readonlyShared}
+                                          />
+                                          <Field
+                                            label="期數"
+                                            value={item.terms}
+                                            onChange={(value) =>
+                                              updateInstallment(item.id, {
+                                                terms: Math.max(1, Math.round(value)),
+                                              })
+                                            }
+                                            step={1}
+                                            min={1}
+                                            disabled={readonlyShared}
+                                          />
+                                          <MonthPicker
+                                            label="開始月份"
+                                            value={item.startMonth}
+                                            onChange={(value) =>
+                                              updateInstallment(item.id, { startMonth: value })
+                                            }
+                                            baseMonth={scenario.meta.baseMonth}
+                                            horizon={scenario.basics.monthsToProject}
+                                            disabled={readonlyShared}
+                                          />
+                                        </div>
+                                        <div style={{ ...styles.mutedBox, ...styles.miniGrid }}>
+                                          <div>
+                                            <div style={styles.statLabel}>月付</div>
+                                            <strong>
+                                              {maskCurrency(item.payment, hiddenAmounts)}
+                                            </strong>
+                                          </div>
+                                          <div>
+                                            <div style={styles.statLabel}>總繳</div>
+                                            <strong>
+                                              {maskCurrency(item.totalPaid, hiddenAmounts)}
+                                            </strong>
+                                          </div>
+                                          <div>
+                                            <div style={styles.statLabel}>利息</div>
+                                            <strong>
+                                              {maskCurrency(item.interest, hiddenAmounts)}
+                                            </strong>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </Collapsible>
                                   </div>
-                                </div>
-                              </Collapsible>
-                            </div>
-                          </SortableItemShell>
-                        );
-                      })}
-                    </SortableContext>
-                  </DndContext>
+                                </SortableItemShell>
+                              );
+                            })}
+                          </SortableContext>
+                        </DndContext>
+                      </div>
+                    )}
+                  </>
                 )}
               </Collapsible>
             </InteractiveSurface>
