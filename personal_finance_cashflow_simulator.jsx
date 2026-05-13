@@ -552,8 +552,11 @@ function listScrollContainerStyle(active) {
   return {
     maxHeight: "60vh",
     overflowY: "auto",
-    scrollbarGutter: "stable",
   };
+}
+
+function listScrollContainerClassName(active) {
+  return active ? "flowra-list-scroll" : undefined;
 }
 
 function EmptyChartState() {
@@ -4064,6 +4067,14 @@ export default function PersonalFinanceCashflowSimulator() {
           -moz-appearance: textfield;
           appearance: textfield;
         }
+        .flowra-list-scroll {
+          scrollbar-width: none;
+        }
+        .flowra-list-scroll::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
+        }
       `}</style>
       <div
         style={{ ...styles.container, ...styles.chartTheme }}
@@ -4393,6 +4404,9 @@ export default function PersonalFinanceCashflowSimulator() {
                     style={listScrollContainerStyle(
                       !isExporting && scenario.oneTimeItems.length > LIST_SCROLL_THRESHOLD,
                     )}
+                    className={listScrollContainerClassName(
+                      !isExporting && scenario.oneTimeItems.length > LIST_SCROLL_THRESHOLD,
+                    )}
                   >
                     <DndContext
                       sensors={sensors}
@@ -4687,6 +4701,9 @@ export default function PersonalFinanceCashflowSimulator() {
                 ) : (
                   <div
                     style={listScrollContainerStyle(
+                      !isExporting && editableInstallments.length > LIST_SCROLL_THRESHOLD,
+                    )}
+                    className={listScrollContainerClassName(
                       !isExporting && editableInstallments.length > LIST_SCROLL_THRESHOLD,
                     )}
                   >
