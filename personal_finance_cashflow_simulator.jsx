@@ -4069,117 +4069,6 @@ export default function PersonalFinanceCashflowSimulator() {
               試算期間：{reportPeriodLabel}　|　產生時間：{generatedAtLabel}
             </div>
           </div>
-          <div
-            className="flowra-no-print flowra-no-report-export"
-            style={{
-              display: "flex",
-              gap: "8px",
-              flexWrap: "wrap",
-              alignItems: "flex-start",
-              justifyContent: "flex-end",
-            }}
-            aria-label="資料管理"
-          >
-            <InteractiveButton
-              onClick={() => syncScenarioToCloud()}
-              disabled={!cloudFeaturesEnabled}
-              style={iconButtonStyle}
-              title="同步備份"
-              aria-label="同步備份"
-            >
-              <CloudUploadIcon />
-            </InteractiveButton>
-            <InteractiveButton
-              onClick={() => refreshCloudBackup({ applyPayload: true })}
-              disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
-              style={iconButtonStyle}
-              title={isCloudBackupLoading ? "還原中..." : "還原備份"}
-              aria-label={isCloudBackupLoading ? "還原中..." : "還原備份"}
-            >
-              <CloudDownloadIcon />
-            </InteractiveButton>
-            <InteractiveButton
-              onClick={() => fileInputRef.current?.click()}
-              style={iconButtonStyle}
-              title="匯入資料"
-              aria-label="匯入資料"
-            >
-              <UploadIcon size={16} />
-            </InteractiveButton>
-            <div ref={exportTriggerRef} style={{ position: "relative" }}>
-              <InteractiveButton
-                onClick={() => setIsExportMenuOpen((value) => !value)}
-                aria-expanded={isExportMenuOpen}
-                style={iconButtonStyle}
-                title="匯出"
-                aria-label="匯出"
-              >
-                <DownloadIcon size={16} />
-              </InteractiveButton>
-              {isExportMenuOpen && typeof document !== "undefined"
-                ? createPortal(
-                    <FloatingSurface
-                      data-export-menu="true"
-                      style={{
-                        ...styles.dropdownMenu,
-                        position: "fixed",
-                        top: exportMenuCoords.top,
-                        right: exportMenuCoords.right,
-                        zIndex: 1000,
-                      }}
-                      motionClassName="flowra-surface-enter"
-                    >
-                      <InteractiveButton
-                        variant="dropdownItem"
-                        onClick={() => {
-                          setIsExportMenuOpen(false);
-                          exportPng();
-                        }}
-                      >
-                        下載整頁圖片
-                      </InteractiveButton>
-                      <InteractiveButton
-                        variant="dropdownItem"
-                        onClick={() => {
-                          setIsExportMenuOpen(false);
-                          exportPdf();
-                        }}
-                      >
-                        下載報表
-                      </InteractiveButton>
-                      <InteractiveButton
-                        variant="dropdownItem"
-                        onClick={() => {
-                          setIsExportMenuOpen(false);
-                          exportExcel();
-                        }}
-                      >
-                        下載表格檔
-                      </InteractiveButton>
-                      <InteractiveButton
-                        variant="dropdownItem"
-                        onClick={() => {
-                          setIsExportMenuOpen(false);
-                          exportJson();
-                        }}
-                      >
-                        下載完整資料
-                      </InteractiveButton>
-                      <InteractiveButton
-                        variant="dropdownItem"
-                        onClick={() => {
-                          setIsExportMenuOpen(false);
-                          printReport();
-                        }}
-                      >
-                        列印
-                      </InteractiveButton>
-                    </FloatingSurface>,
-                    document.body,
-                  )
-                : null}
-            </div>
-          </div>
         </div>
         <div style={styles.summaryGrid}>
           <StatCard
@@ -4969,7 +4858,130 @@ export default function PersonalFinanceCashflowSimulator() {
             </InteractiveSurface>
 
             <InteractiveSurface as="section" style={styles.card} hoverClassName="flowra-hover-card">
-              <h2 style={styles.cardTitle}>資料管理</h2>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  marginBottom: "14px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <h2 style={{ ...styles.cardTitle, margin: 0 }}>資料管理</h2>
+                <div
+                  className="flowra-no-print flowra-no-report-export"
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    justifyContent: "flex-end",
+                  }}
+                  role="toolbar"
+                  aria-label="資料管理動作"
+                >
+                  <InteractiveButton
+                    onClick={() => syncScenarioToCloud()}
+                    disabled={!cloudFeaturesEnabled}
+                    style={iconButtonStyle}
+                    title="同步備份"
+                    aria-label="同步備份"
+                  >
+                    <CloudUploadIcon />
+                  </InteractiveButton>
+                  <InteractiveButton
+                    onClick={() => refreshCloudBackup({ applyPayload: true })}
+                    disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
+                    style={iconButtonStyle}
+                    title={isCloudBackupLoading ? "還原中..." : "還原備份"}
+                    aria-label={isCloudBackupLoading ? "還原中..." : "還原備份"}
+                  >
+                    <CloudDownloadIcon />
+                  </InteractiveButton>
+                  <InteractiveButton
+                    onClick={() => fileInputRef.current?.click()}
+                    style={iconButtonStyle}
+                    title="匯入資料"
+                    aria-label="匯入資料"
+                  >
+                    <UploadIcon size={16} />
+                  </InteractiveButton>
+                  <div ref={exportTriggerRef} style={{ position: "relative" }}>
+                    <InteractiveButton
+                      onClick={() => setIsExportMenuOpen((value) => !value)}
+                      aria-expanded={isExportMenuOpen}
+                      style={iconButtonStyle}
+                      title="匯出"
+                      aria-label="匯出"
+                    >
+                      <DownloadIcon size={16} />
+                    </InteractiveButton>
+                    {isExportMenuOpen && typeof document !== "undefined"
+                      ? createPortal(
+                          <FloatingSurface
+                            data-export-menu="true"
+                            style={{
+                              ...styles.dropdownMenu,
+                              position: "fixed",
+                              top: exportMenuCoords.top,
+                              right: exportMenuCoords.right,
+                              zIndex: 1000,
+                            }}
+                            motionClassName="flowra-surface-enter"
+                          >
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportPng();
+                              }}
+                            >
+                              下載整頁圖片
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportPdf();
+                              }}
+                            >
+                              下載報表
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportExcel();
+                              }}
+                            >
+                              下載表格檔
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                exportJson();
+                              }}
+                            >
+                              下載完整資料
+                            </InteractiveButton>
+                            <InteractiveButton
+                              variant="dropdownItem"
+                              onClick={() => {
+                                setIsExportMenuOpen(false);
+                                printReport();
+                              }}
+                            >
+                              列印
+                            </InteractiveButton>
+                          </FloatingSurface>,
+                          document.body,
+                        )
+                      : null}
+                  </div>
+                </div>
+              </div>
               <input
                 ref={fileInputRef}
                 type="file"
