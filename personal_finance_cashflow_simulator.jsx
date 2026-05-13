@@ -1141,6 +1141,85 @@ function DownloadIcon({ size = 16 }) {
   );
 }
 
+function PlusIcon({ size = 14 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 2 V 12" />
+      <path d="M2 7 H 12" />
+    </svg>
+  );
+}
+
+function UploadIcon({ size = 14 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 11 V 3" />
+      <path d="M3.5 6.5 L7 3 L10.5 6.5" />
+      <path d="M2.5 12 H 11.5" />
+    </svg>
+  );
+}
+
+function CloudUploadIcon({ size = 16 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 11 A 3 3 0 0 1 4.8 5 A 4 4 0 0 1 12.4 6 A 2.6 2.6 0 0 1 12 11" />
+      <path d="M8 13.5 V 7.5" />
+      <path d="M6 9.5 L 8 7.5 L 10 9.5" />
+    </svg>
+  );
+}
+
+function CloudDownloadIcon({ size = 16 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4.5 10 A 3 3 0 0 1 4.8 4 A 4 4 0 0 1 12.4 5 A 2.6 2.6 0 0 1 12 10" />
+      <path d="M8 7.5 V 13.5" />
+      <path d="M6 11.5 L 8 13.5 L 10 11.5" />
+    </svg>
+  );
+}
+
 function Collapsible({ open, children, topGap = 12 }) {
   return (
     <div
@@ -1214,6 +1293,17 @@ const itemToggleStyle = {
   border: "none",
   cursor: "pointer",
   textAlign: "left",
+};
+
+const iconButtonStyle = {
+  width: "32px",
+  height: "32px",
+  padding: 0,
+  borderRadius: "10px",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
 };
 
 function SettingsGroup({ title, accent, last, children }) {
@@ -4247,8 +4337,11 @@ export default function PersonalFinanceCashflowSimulator() {
                   variant="smallButton"
                   onClick={addOneTimeItem}
                   disabled={readonlyShared}
+                  style={iconButtonStyle}
+                  title="新增單筆收支"
+                  aria-label="新增單筆收支"
                 >
-                  + 新增
+                  <PlusIcon />
                 </InteractiveButton>
               </div>
               <Collapsible open={isOneTimeOpen}>
@@ -4277,7 +4370,10 @@ export default function PersonalFinanceCashflowSimulator() {
                         onClick={addOneTimeItem}
                         disabled={readonlyShared}
                       >
-                        立即新增第一筆
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <PlusIcon />
+                          立即新增第一筆
+                        </span>
                       </InteractiveButton>,
                     ]}
                   />
@@ -4503,15 +4599,21 @@ export default function PersonalFinanceCashflowSimulator() {
                     variant="smallButton"
                     onClick={() => setIsBulkImportOpen((value) => !value)}
                     disabled={readonlyShared}
+                    style={iconButtonStyle}
+                    title="批次匯入分期"
+                    aria-label="批次匯入分期"
                   >
-                    批次匯入
+                    <UploadIcon />
                   </InteractiveButton>
                   <InteractiveButton
                     variant="smallButton"
                     onClick={addInstallment}
                     disabled={readonlyShared}
+                    style={iconButtonStyle}
+                    title="新增分期"
+                    aria-label="新增分期"
                   >
-                    + 新增
+                    <PlusIcon />
                   </InteractiveButton>
                 </div>
               </div>
@@ -4542,7 +4644,10 @@ export default function PersonalFinanceCashflowSimulator() {
                         onClick={addInstallment}
                         disabled={readonlyShared}
                       >
-                        + 新增分期
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <PlusIcon />
+                          新增分期
+                        </span>
                       </InteractiveButton>,
                       <InteractiveButton
                         key="bulk"
@@ -4550,7 +4655,10 @@ export default function PersonalFinanceCashflowSimulator() {
                         onClick={() => setIsBulkImportOpen(true)}
                         disabled={readonlyShared}
                       >
-                        批次匯入
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <UploadIcon />
+                          批次匯入
+                        </span>
                       </InteractiveButton>,
                     ]}
                   />
@@ -4761,8 +4869,11 @@ export default function PersonalFinanceCashflowSimulator() {
                         key={action.key}
                         onClick={() => syncScenarioToCloud()}
                         disabled={!cloudFeaturesEnabled}
+                        style={iconButtonStyle}
+                        title={action.label}
+                        aria-label={action.label}
                       >
-                        {action.label}
+                        <CloudUploadIcon />
                       </InteractiveButton>
                     );
                   }
@@ -4771,8 +4882,11 @@ export default function PersonalFinanceCashflowSimulator() {
                       <InteractiveButton
                         key={action.key}
                         onClick={() => fileInputRef.current?.click()}
+                        style={iconButtonStyle}
+                        title={action.label}
+                        aria-label={action.label}
                       >
-                        {action.label}
+                        <UploadIcon size={16} />
                       </InteractiveButton>
                     );
                   }
@@ -4782,8 +4896,11 @@ export default function PersonalFinanceCashflowSimulator() {
                         key={action.key}
                         onClick={() => refreshCloudBackup({ applyPayload: true })}
                         disabled={!cloudFeaturesEnabled || isCloudBackupLoading}
+                        style={iconButtonStyle}
+                        title={isCloudBackupLoading ? "還原中..." : action.label}
+                        aria-label={isCloudBackupLoading ? "還原中..." : action.label}
                       >
-                        {isCloudBackupLoading ? "還原中..." : action.label}
+                        <CloudDownloadIcon />
                       </InteractiveButton>
                     );
                   }
@@ -4793,8 +4910,11 @@ export default function PersonalFinanceCashflowSimulator() {
                         <InteractiveButton
                           onClick={() => setIsExportMenuOpen((value) => !value)}
                           aria-expanded={isExportMenuOpen}
+                          style={iconButtonStyle}
+                          title={action.label}
+                          aria-label={action.label}
                         >
-                          {action.label}
+                          <DownloadIcon size={16} />
                         </InteractiveButton>
                         {isExportMenuOpen && typeof document !== "undefined"
                           ? createPortal(
